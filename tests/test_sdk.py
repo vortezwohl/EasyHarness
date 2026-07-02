@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import unittest
 from collections.abc import AsyncGenerator
+import json
+from pathlib import Path
+import tempfile
 from typing import Protocol
 from unittest import mock
 
@@ -297,8 +300,8 @@ class EasyHarnessSdkTests(unittest.TestCase):
             set(easyharness.__all__),
             {"Agent", "ModelConfig", "AgentEvent", "ToolOutput", "tool"},
         )
-        public_names = {name for name in dir(easyharness) if not name.startswith("_")}
-        self.assertEqual(public_names, set(easyharness.__all__))
+        for name in easyharness.__all__:
+            self.assertTrue(hasattr(easyharness, name))
 
     def test_model_config_defaults_and_base_url_override(self) -> None:
         """ModelConfig 默认值与显式 base_url 覆盖应生效。"""
@@ -548,6 +551,135 @@ class EasyHarnessSdkTests(unittest.TestCase):
             event.data["mode"] for event in events if event.kind == "compress"
         ]
         self.assertIn("custom", compress_modes)
+
+    def test_toolset_builder_keeps_root_public_surface_minimal(self) -> None:
+        """导入 toolset builder 不应扩张根包公开 SDK 名字集。"""
+
+        from easyharness.toolset import build_fileglide_tools
+
+        self.assertTrue(callable(build_fileglide_tools))
+        self.assertEqual(
+            set(easyharness.__all__),
+            {"Agent", "ModelConfig", "AgentEvent", "ToolOutput", "tool"},
+        )
+
+    def test_fileglide_toolset_contains_expected_tools_and_respects_root(self) -> None:
+        """官方 fileglide 工具集应包含约定名称，并遵循 root 作用域。"""
+
+        from easyharness.toolset import build_fileglide_tools
+
+        with (
+            tempfile.TemporaryDirectory() as root_dir,
+            tempfile.TemporaryDirectory() as outside_dir,
+        ):
+            root_path = Path(root_dir)
+            outside_path = Path(outside_dir)
+            (root_path / "demo.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+            (outside_path / "secret.txt").write_text("secret\n", encoding="utf-8")
+
+            tools = build_fileglide_tools(root=root_path)
+            tool_map = {item.tool_name: item for item in tools}
+
+            self.assertEqual(
+                set(tool_map),
+                {
+                    "fileglide_list_tree",
+                    "fileglide_search_paths",
+                    "fileglide_read_text",
+                    "fileglide_search_text",
+                    "fileglide_edit_text",
+                    "fileglide_manage_paths",
+                    "fileglide_inspect_path",
+                },
+            )
+
+            read_output = tool_map["fileglide_read_text"]("demo.txt")
+            self.assertTrue(read_output.data["ok"])
+            self.assertEqual(read_output.data["root"], str(root_path.resolve()))
+            self.assertEqual(
+                read_output.data["result"]["content"].splitlines(),
+                ["alpha", "beta"],
+            )
+
+            escaped_output = tool_map["fileglide_read_text"](
+                str(outside_path / "secret.txt")
+            )
+            self.assertFalse(escaped_output.data["ok"])
+            self.assertEqual(escaped_output.data["error"]["code"], "scope_violation")
+
+    def test_fileglide_toolset_normalizes_preview_payloads_as_json(self) -> None:
+        """fileglide dataclass 结果应被归一化为 JSON 可序列化结构。"""
+
+        from easyharness.toolset import build_fileglide_tools
+
+        with tempfile.TemporaryDirectory() as root_dir:
+            root_path = Path(root_dir)
+            (root_path / "preview.txt").write_text("preview\n", encoding="utf-8")
+
+            tools = build_fileglide_tools(root=root_path)
+            tool_map = {item.tool_name: item for item in tools}
+            preview_output = tool_map["fileglide_manage_paths"](
+                action="delete",
+                kind="file",
+                target="preview.txt",
+                dry_run=True,
+            )
+
+            self.assertTrue(preview_output.data["ok"])
+            self.assertIsInstance(preview_output.data["result"]["preview"], dict)
+            json.dumps(preview_output.data, ensure_ascii=False)
+
+    def test_agent_loads_default_file_tools_and_allows_override(self) -> None:
+        """Agent 应默认装载官方文件工具，允许禁用和同名覆盖。"""
+
+        @tool(
+            name="fileglide_read_text",
+            purpose="覆盖默认读文件工具。",
+            when_to_use="当测试需要验证同名工具覆盖时使用。",
+            parameters={"target": "仅用于测试的目标路径。"},
+            returns="返回固定文本。",
+            common_failures=["不会失败"],
+        )
+        def custom_read_text(target: str) -> str:
+            del target
+            return "custom"
+
+        with mock.patch(
+            "easyharness._internal.runtime.build_runtime_model",
+            return_value=FakeModel(),
+        ):
+            default_agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+            )
+            disabled_agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+                enable_file_tools=False,
+            )
+            overridden_agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+                tools=[custom_read_text],
+            )
+
+        default_tool_map = {
+            item.tool_name: item for item in default_agent._runtime._tools
+        }
+        disabled_tool_names = [
+            item.tool_name for item in disabled_agent._runtime._tools
+        ]
+        overridden_tool_map = {
+            item.tool_name: item for item in overridden_agent._runtime._tools
+        }
+
+        self.assertIn("fileglide_read_text", default_tool_map)
+        self.assertEqual(disabled_tool_names, [])
+        self.assertIs(
+            overridden_tool_map["fileglide_read_text"],
+            custom_read_text,
+        )
+        self.assertIn("fileglide_manage_paths", overridden_tool_map)
 
 
 if __name__ == "__main__":

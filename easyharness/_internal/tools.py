@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 from strands.types._events import ToolResultEvent
 from strands.types.tools import AgentTool, ToolGenerator, ToolResult, ToolSpec, ToolUse
 
-from .types import ToolOutput
+from easyharness._internal.types import ToolOutput
 
 RequiredMetadata = Mapping[str, str]
 ToolCallable = Callable[..., object]

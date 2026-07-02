@@ -20,11 +20,60 @@ from strands import Agent as StrandsAgent
 from strands.agent.conversation_manager import ConversationManager
 from strands.types.content import Message
 
-from .conversation import bind_event_sink_if_supported, clone_conversation_manager
-from .model import build_runtime_model
-from .types import AgentEvent, EventKind, EventStatus, ModelConfig
+from easyharness._internal.conversation import (
+    bind_event_sink_if_supported,
+    clone_conversation_manager,
+)
+from easyharness._internal.model import build_runtime_model
+from easyharness._internal.types import (
+    AgentEvent,
+    EventKind,
+    EventStatus,
+    ModelConfig,
+)
 
 _STREAM_END = object()
+
+
+def _tool_public_name(tool_obj: object) -> str:
+    """Return the public tool name used for default-tool de-duplication."""
+
+    candidate = getattr(tool_obj, "tool_name", None)
+    if isinstance(candidate, str) and candidate:
+        return candidate
+    if callable(candidate):
+        value = candidate()
+        if isinstance(value, str) and value:
+            return value
+
+    fallback = getattr(tool_obj, "__name__", None)
+    if isinstance(fallback, str) and fallback:
+        return fallback
+    return tool_obj.__class__.__name__
+
+
+def _merge_default_file_tools(
+    *,
+    tools: list[object] | None,
+    enable_file_tools: bool,
+) -> list[object]:
+    """Merge explicit tools with the default fileglide toolset.
+
+    Explicit tools keep precedence when a caller provides the same public tool
+    name as one of the default file tools.
+    """
+
+    merged_tools = list(tools or [])
+    if not enable_file_tools:
+        return merged_tools
+
+    from easyharness.toolset import build_fileglide_tools
+
+    explicit_names = {_tool_public_name(item) for item in merged_tools}
+    for default_tool in build_fileglide_tools():
+        if _tool_public_name(default_tool) not in explicit_names:
+            merged_tools.append(default_tool)
+    return merged_tools
 
 
 def utc_now_iso() -> str:
@@ -396,7 +445,8 @@ class Agent:
         model: Public model configuration.
         system_prompt: System prompt used by the current session.
         tools: Tools available to the current agent.
-        conversation_manager: Optional custom conversation manager; the default
+        enable_file_tools: Whether to auto-load the official file toolset.
+        conversation_manager: Optional custom conversation manager. The default
             summarizing manager is used when omitted.
     """
 
@@ -405,6 +455,7 @@ class Agent:
         model: ModelConfig,
         system_prompt: str,
         tools: list[object] | None = None,
+        enable_file_tools: bool = True,
         conversation_manager: ConversationManager | None = None,
     ) -> None:
         """Initialize a session-oriented agent."""
@@ -412,7 +463,10 @@ class Agent:
         self._runtime = _StrandsRuntime(
             model_config=model,
             system_prompt=system_prompt,
-            tools=tools or [],
+            tools=_merge_default_file_tools(
+                tools=tools,
+                enable_file_tools=enable_file_tools,
+            ),
             conversation_manager=conversation_manager,
         )
 

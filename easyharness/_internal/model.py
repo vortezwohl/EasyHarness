@@ -14,7 +14,7 @@ from strands.models.litellm import LiteLLMModel
 from strands.models._validation import _has_location_source
 from strands.types.content import ContentBlock, Messages, SystemContentBlock
 
-from .types import ModelConfig
+from easyharness._internal.types import ModelConfig
 
 logger = logging.getLogger(__name__)
 
