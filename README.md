@@ -167,12 +167,26 @@ agent = Agent(
     ),
     system_prompt="You are a careful agent.",
     enable_fileglide=False,
-    tools=build_fileglide_tools(root="D:/Projects/PythonProjects/EasyHarness"),
+    tools=build_fileglide_tools(default_root="D:/Projects/PythonProjects/EasyHarness"),
 )
 ```
 
-`build_fileglide_tools(root=...)` creates the official scoped toolset. Paths
+`build_fileglide_tools(default_root=...)` creates the official scoped toolset. Paths
 that escape the configured root are rejected by FileGlide scope protection.
+
+Each official `fileglide_*` tool also accepts an optional `root` argument for
+that single call. When provided, it overrides the builder's default root
+without additional SDK-level path-range restrictions.
+
+```python
+tools = build_fileglide_tools(default_root="D:/Projects/PythonProjects/EasyHarness")
+tool_map = {tool.tool_name: tool for tool in tools}
+
+result = tool_map["fileglide_read_text"](
+    target="EasyHarness/pyproject.toml",
+    root="D:/Projects/PythonProjects",
+)
+```
 
 ## Event Stream
 

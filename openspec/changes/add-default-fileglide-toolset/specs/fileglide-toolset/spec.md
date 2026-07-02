@@ -26,7 +26,7 @@ The SDK MUST expose the official fileglide-based toolset through the `easyharnes
 `build_fileglide_tools` MUST allow the caller to construct the official toolset for an explicit filesystem root. Tools created from that builder MUST execute against the configured root scope and rely on fileglide scope enforcement for path escape protection.
 
 #### Scenario: Developer builds tools for an explicit root
-- **WHEN** a developer calls `build_fileglide_tools(root="D:/Projects/PythonProjects/EasyHarness")`
+- **WHEN** a developer calls `build_fileglide_tools(default_root="D:/Projects/PythonProjects/EasyHarness")`
 - **THEN** the returned tools MUST execute fileglide operations using that root as their scope
 
 #### Scenario: Scoped tools reject escaped targets

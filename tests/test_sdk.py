@@ -577,7 +577,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             (root_path / "demo.txt").write_text("alpha\nbeta\n", encoding="utf-8")
             (outside_path / "secret.txt").write_text("secret\n", encoding="utf-8")
 
-            tools = build_fileglide_tools(root=root_path)
+            tools = build_fileglide_tools(default_root=root_path)
             tool_map = {item.tool_name: item for item in tools}
 
             self.assertEqual(
@@ -592,6 +592,9 @@ class EasyHarnessSdkTests(unittest.TestCase):
                     "fileglide_inspect_path",
                 },
             )
+            for tool_name, tool_obj in tool_map.items():
+                properties = tool_obj.tool_spec["inputSchema"]["json"]["properties"]
+                self.assertIn("root", properties, tool_name)
 
             read_output = tool_map["fileglide_read_text"]("demo.txt")
             self.assertTrue(read_output.data["ok"])
@@ -607,6 +610,46 @@ class EasyHarnessSdkTests(unittest.TestCase):
             self.assertFalse(escaped_output.data["ok"])
             self.assertEqual(escaped_output.data["error"]["code"], "scope_violation")
 
+    def test_fileglide_toolset_allows_explicit_root_override(self) -> None:
+        """官方 fileglide 工具应支持调用期显式 root 覆盖。"""
+
+        from easyharness.toolset import build_fileglide_tools
+
+        with (
+            tempfile.TemporaryDirectory() as root_dir,
+            tempfile.TemporaryDirectory() as outside_dir,
+        ):
+            root_path = Path(root_dir)
+            outside_path = Path(outside_dir)
+            parent_path = root_path.parent
+            (root_path / "demo.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+            (outside_path / "secret.txt").write_text("secret\n", encoding="utf-8")
+
+            tools = build_fileglide_tools(default_root=root_path)
+            tool_map = {item.tool_name: item for item in tools}
+
+            sibling_output = tool_map["fileglide_read_text"](
+                target=f"{outside_path.name}/secret.txt",
+                root=str(parent_path),
+            )
+            self.assertTrue(sibling_output.data["ok"])
+            self.assertEqual(sibling_output.data["root"], str(parent_path.resolve()))
+            self.assertEqual(
+                sibling_output.data["result"]["content"].splitlines(),
+                ["secret"],
+            )
+
+            scoped_failure = tool_map["fileglide_read_text"](
+                target=f"../{root_path.name}/demo.txt",
+                root=str(outside_path),
+            )
+            self.assertFalse(scoped_failure.data["ok"])
+            self.assertEqual(scoped_failure.data["root"], str(outside_path.resolve()))
+            self.assertEqual(
+                scoped_failure.data["error"]["code"],
+                "scope_violation",
+            )
+
     def test_fileglide_toolset_normalizes_preview_payloads_as_json(self) -> None:
         """fileglide dataclass 结果应被归一化为 JSON 可序列化结构。"""
 
@@ -616,7 +659,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             root_path = Path(root_dir)
             (root_path / "preview.txt").write_text("preview\n", encoding="utf-8")
 
-            tools = build_fileglide_tools(root=root_path)
+            tools = build_fileglide_tools(default_root=root_path)
             tool_map = {item.tool_name: item for item in tools}
             preview_output = tool_map["fileglide_manage_paths"](
                 action="delete",

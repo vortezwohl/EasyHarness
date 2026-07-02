@@ -163,7 +163,7 @@ agent = Agent(
     model=model,
     system_prompt=prompt,
     enable_fileglide=False,
-    tools=build_fileglide_tools(root="D:/Projects/PythonProjects/EasyHarness"),
+    tools=build_fileglide_tools(default_root="D:/Projects/PythonProjects/EasyHarness"),
 )
 ```
 

@@ -157,20 +157,32 @@ def _validate_inspect_action(action: str) -> None:
         )
 
 
-def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
+def _resolve_effective_root(
+    facade: FileGlideFacade,
+    default_root: Path,
+    root: str | Path | None,
+) -> Path:
+    """Resolve the effective root for a single tool call."""
+
+    if root is None:
+        return default_root
+    return facade.scope.normalize_root(root)
+
+
+def build_fileglide_tools(default_root: str | Path | None = None) -> list[object]:
     """Build the official curated fileglide toolset.
 
     Args:
-        root: Root directory enforced by the fileglide scope. The current
-            working directory is used when omitted.
+        default_root: Default root directory enforced by the fileglide scope
+            when a single tool call does not provide an explicit `root`. The
+            current working directory is used when omitted.
 
     Returns:
         Official tool objects ready to be passed into `Agent(tools=[...])`.
     """
 
     facade = FileGlideFacade()
-    resolved_root = facade.scope.normalize_root(root)
-    root_text = str(resolved_root)
+    resolved_default_root = facade.scope.normalize_root(default_root)
     content_source = {"source": "easyharness.toolset"}
 
     @tool(
@@ -194,6 +206,11 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
             "max_depth": "Maximum recursion depth, or None for no explicit cap.",
             "include": "Optional include patterns that match names or paths.",
             "exclude": "Optional exclude patterns that match names or paths.",
+            "root": (
+                "Optional explicit root for this call. When provided, it "
+                "overrides the toolset default root without SDK-level path "
+                "range restrictions."
+            ),
         },
         returns=(
             "A structured tree listing with entry metadata and a normalized "
@@ -211,14 +228,21 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
         max_depth: int | None = None,
         include: list[str] | None = None,
         exclude: list[str] | None = None,
+        root: str | None = None,
     ) -> ToolOutput:
         """List the file tree and basic metadata."""
 
+        effective_root = _resolve_effective_root(
+            facade,
+            resolved_default_root,
+            root,
+        )
+        effective_root_text = str(effective_root)
         return _run_fileglide(
-            root=resolved_root,
+            root=effective_root,
             operation="fileglide_list_tree",
             action=lambda: facade.traversal.list_entries(
-                root_text,
+                effective_root_text,
                 start=start,
                 kind=kind,
                 recursive=recursive,
@@ -251,6 +275,11 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
             "include": "Optional include patterns.",
             "exclude": "Optional exclude patterns.",
             "limit": "Maximum number of matches to return.",
+            "root": (
+                "Optional explicit root for this call. When provided, it "
+                "overrides the toolset default root without SDK-level path "
+                "range restrictions."
+            ),
         },
         returns=(
             "A structured match list with scores and a normalized EasyHarness "
@@ -271,14 +300,21 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
         include: list[str] | None = None,
         exclude: list[str] | None = None,
         limit: int = 50,
+        root: str | None = None,
     ) -> ToolOutput:
         """Search path names and relative paths."""
 
+        effective_root = _resolve_effective_root(
+            facade,
+            resolved_default_root,
+            root,
+        )
+        effective_root_text = str(effective_root)
         return _run_fileglide(
-            root=resolved_root,
+            root=effective_root,
             operation="fileglide_search_paths",
             action=lambda: facade.search.search_names(
-                root_text,
+                effective_root_text,
                 query=query,
                 mode=mode,
                 start=start,
@@ -309,6 +345,11 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
                 "Optional explicit encoding. When omitted, fileglide will "
                 "detect the encoding automatically."
             ),
+            "root": (
+                "Optional explicit root for this call. When provided, it "
+                "overrides the toolset default root without SDK-level path "
+                "range restrictions."
+            ),
         },
         returns=(
             "Structured text content, line metadata, encoding details, and a "
@@ -325,14 +366,21 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
         start_line: int | None = None,
         end_line: int | None = None,
         encoding: str | None = None,
+        root: str | None = None,
     ) -> ToolOutput:
         """Read text file content."""
 
+        effective_root = _resolve_effective_root(
+            facade,
+            resolved_default_root,
+            root,
+        )
+        effective_root_text = str(effective_root)
         return _run_fileglide(
-            root=resolved_root,
+            root=effective_root,
             operation="fileglide_read_text",
             action=lambda: facade.text.read_text(
-                root_text,
+                effective_root_text,
                 target,
                 encoding=encoding,
                 start_line=start_line,
@@ -361,6 +409,11 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
             "include": "Optional include patterns.",
             "exclude": "Optional exclude patterns.",
             "encoding": "Optional explicit text encoding.",
+            "root": (
+                "Optional explicit root for this call. When provided, it "
+                "overrides the toolset default root without SDK-level path "
+                "range restrictions."
+            ),
         },
         returns=(
             "Structured match results with file paths, line numbers, matched "
@@ -379,14 +432,21 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
         include: list[str] | None = None,
         exclude: list[str] | None = None,
         encoding: str | None = None,
+        root: str | None = None,
     ) -> ToolOutput:
         """Search text content with a regular expression."""
 
+        effective_root = _resolve_effective_root(
+            facade,
+            resolved_default_root,
+            root,
+        )
+        effective_root_text = str(effective_root)
         return _run_fileglide(
-            root=resolved_root,
+            root=effective_root,
             operation="fileglide_search_text",
             action=lambda: facade.search.regex_search(
-                root_text,
+                effective_root_text,
                 pattern=pattern,
                 start=start,
                 recursive=recursive,
@@ -422,6 +482,11 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
                 "Optional explicit encoding. When omitted, fileglide will "
                 "handle encoding automatically."
             ),
+            "root": (
+                "Optional explicit root for this call. When provided, it "
+                "overrides the toolset default root without SDK-level path "
+                "range restrictions."
+            ),
         },
         returns=(
             "Structured edit results with file metadata, encoding details, and "
@@ -444,13 +509,21 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
         mode: str = "overwrite",
         position: int | None = None,
         encoding: str | None = None,
+        root: str | None = None,
     ) -> ToolOutput:
         """Perform precise text edits."""
+
+        effective_root = _resolve_effective_root(
+            facade,
+            resolved_default_root,
+            root,
+        )
+        effective_root_text = str(effective_root)
 
         def run_action() -> dict[str, Any]:
             if action == "write":
                 return facade.text.write_text(
-                    root_text,
+                    effective_root_text,
                     target,
                     content=_require_text_content(action, content),
                     content_source=content_source,
@@ -466,7 +539,7 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
                         details={"action": action},
                     )
                 return facade.text.replace_lines(
-                    root_text,
+                    effective_root_text,
                     target,
                     start_line=start_line,
                     end_line=end_line,
@@ -482,7 +555,7 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
                         details={"action": action},
                     )
                 return facade.text.insert_by_anchor(
-                    root_text,
+                    effective_root_text,
                     target,
                     anchor=anchor,
                     content=_require_text_content(action, content),
@@ -497,7 +570,7 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
             )
 
         return _run_fileglide(
-            root=resolved_root,
+            root=effective_root,
             operation="fileglide_edit_text",
             action=run_action,
         )
@@ -532,6 +605,11 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
             ),
             "confirm": "Whether delete or move should perform the real change.",
             "missing_ok": "Whether delete should allow a missing target.",
+            "root": (
+                "Optional explicit root for this call. When provided, it "
+                "overrides the toolset default root without SDK-level path "
+                "range restrictions."
+            ),
         },
         returns=(
             "Structured path-management results with preview information and a "
@@ -556,8 +634,16 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
         dry_run: bool = False,
         confirm: bool = False,
         missing_ok: bool = False,
+        root: str | None = None,
     ) -> ToolOutput:
         """Create, inspect, delete, or move paths."""
+
+        effective_root = _resolve_effective_root(
+            facade,
+            resolved_default_root,
+            root,
+        )
+        effective_root_text = str(effective_root)
 
         def run_action() -> dict[str, Any]:
             _validate_manage_action(action, kind)
@@ -571,13 +657,13 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
                     )
                 if kind == "file":
                     return facade.filesystem.create_file(
-                        root_text,
+                        effective_root_text,
                         target,
                         parents=parents,
                         exist_ok=exist_ok,
                     )
                 return facade.filesystem.create_path(
-                    root_text,
+                    effective_root_text,
                     target,
                     parents=parents,
                     exist_ok=exist_ok,
@@ -590,7 +676,7 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
                         message="exists requires target.",
                         details={"action": action},
                     )
-                return facade.filesystem.exists(root_text, target)
+                return facade.filesystem.exists(effective_root_text, target)
 
             if action == "delete":
                 if not target:
@@ -601,14 +687,14 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
                     )
                 if kind == "file":
                     return facade.filesystem.delete_file(
-                        root_text,
+                        effective_root_text,
                         target,
                         dry_run=dry_run,
                         confirm=confirm,
                         missing_ok=missing_ok,
                     )
                 return facade.filesystem.delete_path(
-                    root_text,
+                    effective_root_text,
                     target,
                     recursive=recursive,
                     dry_run=dry_run,
@@ -624,14 +710,14 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
                 )
             if kind == "file":
                 return facade.filesystem.move_file(
-                    root_text,
+                    effective_root_text,
                     source,
                     destination,
                     dry_run=dry_run,
                     confirm=confirm,
                 )
             return facade.filesystem.move_path(
-                root_text,
+                effective_root_text,
                 source,
                 destination,
                 dry_run=dry_run,
@@ -639,7 +725,7 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
             )
 
         return _run_fileglide(
-            root=resolved_root,
+            root=effective_root,
             operation="fileglide_manage_paths",
             action=run_action,
         )
@@ -662,6 +748,11 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
                 "Number of bytes to read for read_bytes, or None to read "
                 "through the end."
             ),
+            "root": (
+                "Optional explicit root for this call. When provided, it "
+                "overrides the toolset default root without SDK-level path "
+                "range restrictions."
+            ),
         },
         returns=(
             "Structured size data or byte-read results with a normalized "
@@ -678,22 +769,30 @@ def build_fileglide_tools(root: str | Path | None = None) -> list[object]:
         target: str,
         offset: int = 0,
         length: int | None = None,
+        root: str | None = None,
     ) -> ToolOutput:
         """Inspect path size or read raw bytes."""
+
+        effective_root = _resolve_effective_root(
+            facade,
+            resolved_default_root,
+            root,
+        )
+        effective_root_text = str(effective_root)
 
         def run_action() -> dict[str, Any]:
             _validate_inspect_action(action)
             if action == "size":
-                return facade.sizing.stat_size(root_text, target)
+                return facade.sizing.stat_size(effective_root_text, target)
             return facade.binary.read_bytes(
-                root_text,
+                effective_root_text,
                 target,
                 offset=offset,
                 length=length,
             )
 
         return _run_fileglide(
-            root=resolved_root,
+            root=effective_root,
             operation="fileglide_inspect_path",
             action=run_action,
         )
