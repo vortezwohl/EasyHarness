@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "easyharness"
 version = "0.1.0"
@@ -12,6 +16,10 @@ dependencies = [
     "strands-agents[litellm]>=1.45.0",
     "fileglide>=0.0.1",
 ]
+
+[tool.setuptools.packages.find]
+include = ["easyharness", "easyharness.*"]
+exclude = ["openspec", "openspec.*", "tests", "tests.*"]
 
 [tool.ruff]
 line-length = 88
