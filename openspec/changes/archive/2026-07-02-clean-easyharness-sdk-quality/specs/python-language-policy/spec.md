@@ -12,7 +12,7 @@ EasyHarness Python file headers, docstrings, and key maintenance comments MUST f
 - **THEN** it MUST NOT convert them to English unless the project language rules are separately changed first
 
 ### Requirement: English strings SHALL be reserved for technical boundary cases
-EasyHarness MAY retain English strings where the text is part of a model-facing prompt contract, a third-party protocol field, a standardized external interface, or a test assertion that intentionally validates English output.
+EasyHarness MUST reserve English strings for cases where the text is part of a model-facing prompt contract, a third-party protocol field, a standardized external interface, or a test assertion that intentionally validates English output.
 
 #### Scenario: Tool description is visible to the model
 - **WHEN** a string is constructed specifically for model-facing tool instructions or protocol interoperability
