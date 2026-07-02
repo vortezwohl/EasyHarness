@@ -12,3 +12,10 @@ dependencies = [
     "strands-agents[litellm]>=1.45.0",
     "fileglide>=0.0.1",
 ]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["ANN", "ARG", "E", "F", "I"]

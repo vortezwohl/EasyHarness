@@ -1,8 +1,9 @@
-"""默认会话压缩管理器及事件接入点。
+"""Default conversation compression manager and event integration points.
 
-本模块在 Strands 的 `SummarizingConversationManager` 上加一层极薄封装，
-用于在压缩开始、完成、失败时向上层发出统一事件，而不改变底层原有的
-reactive/proactive 控制流语义。
+This module adds a thin wrapper around Strands
+`SummarizingConversationManager` so compression start, completion, and failure
+emit unified upper-layer events without changing the original
+reactive/proactive control-flow semantics.
 """
 
 from __future__ import annotations
@@ -11,53 +12,67 @@ import logging
 import time
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol
 
-from strands.agent.conversation_manager import ConversationManager, SummarizingConversationManager
+from strands.agent.conversation_manager import (
+    ConversationManager,
+    SummarizingConversationManager,
+)
+
+if TYPE_CHECKING:
+    from strands.agent.agent import Agent as StrandsAgent
 
 logger = logging.getLogger(__name__)
 
-InternalEventSink = Callable[[dict[str, Any]], None]
+InternalEventSink = Callable[[dict[str, object]], None]
 
 
 class SupportsEventSink(Protocol):
-    """声明可选的事件 sink 绑定协议。"""
+    """Protocol for managers that optionally support event sink binding."""
 
     def bind_event_sink(self, sink: InternalEventSink | None) -> None:
-        """绑定或清空一个内部事件 sink。"""
+        """Bind or clear an internal event sink."""
 
 
 def utc_now_iso() -> str:
-    """返回当前 UTC 时间的 ISO 8601 字符串。"""
+    """Return the current UTC time as an ISO 8601 string."""
 
     return datetime.now(timezone.utc).isoformat()
 
 
 class EventingSummarizingConversationManager(SummarizingConversationManager):
-    """带压缩事件能力的默认摘要型会话管理器。"""
+    """Default summarizing conversation manager with compression events."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        """初始化默认摘要型会话管理器。"""
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        """Initialize the default summarizing conversation manager."""
 
         super().__init__(*args, **kwargs)
         self._event_sink: InternalEventSink | None = None
 
     def bind_event_sink(self, sink: InternalEventSink | None) -> None:
-        """绑定或清空运行时事件 sink。
+        """Bind or clear the runtime event sink.
 
         Args:
-            sink: 接收内部压缩事件的回调；传入 `None` 表示取消绑定。
+            sink: Callback for internal compression events; `None` unbinds it.
         """
 
         self._event_sink = sink
 
-    def _emit(self, status: str, *, mode: str, started_at: str, duration_ms: int | None = None, error: str | None = None) -> None:
-        """向上层发出内部压缩事件。"""
+    def _emit(
+        self,
+        status: str,
+        *,
+        mode: str,
+        started_at: str,
+        duration_ms: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Emit an internal compression event to the upper layer."""
 
         if self._event_sink is None:
             return
 
-        payload: dict[str, Any] = {
+        payload: dict[str, object] = {
             "easyharness_compress": {
                 "status": status,
                 "started_at": started_at,
@@ -69,16 +84,21 @@ class EventingSummarizingConversationManager(SummarizingConversationManager):
             payload["easyharness_compress"]["error"] = error
         self._event_sink(payload)
 
-    def reduce_context(self, agent: Any, e: Exception | None = None, **kwargs: Any) -> None:
-        """执行上下文压缩并发出 started/completed/failed 事件。
+    def reduce_context(
+        self,
+        agent: StrandsAgent,
+        e: Exception | None = None,
+        **kwargs: object,
+    ) -> None:
+        """Compress context and emit started/completed/failed events.
 
         Args:
-            agent: 当前 Strands Agent。
-            e: 触发压缩的异常；为 `None` 时表示 proactive 压缩。
-            **kwargs: 为兼容底层接口保留。
+            agent: Current Strands agent.
+            e: Triggering exception; `None` means proactive compression.
+            **kwargs: Reserved for compatibility with the underlying API.
 
         Raises:
-            Exception: reactive 压缩失败时继续向上传播原始失败。
+            Exception: Propagated when reactive compression also fails.
         """
 
         del kwargs
@@ -101,22 +121,31 @@ class EventingSummarizingConversationManager(SummarizingConversationManager):
             if e is not None:
                 logger.error("Summarization failed: %s", summarization_error)
                 raise summarization_error from e
-            logger.warning("Proactive summarization failed, continuing: %s", summarization_error)
+            logger.warning(
+                "Proactive summarization failed, continuing: %s",
+                summarization_error,
+            )
         else:
             duration_ms = int((time.perf_counter() - start) * 1000)
-            self._emit("completed", mode=mode, started_at=started_at, duration_ms=duration_ms)
+            self._emit(
+                "completed",
+                mode=mode,
+                started_at=started_at,
+                duration_ms=duration_ms,
+            )
 
 
 def clone_conversation_manager(
     conversation_manager: ConversationManager | None,
 ) -> ConversationManager:
-    """按最小代价复制会话管理器，保证 reset 后能获得新会话状态。
+    """Clone a conversation manager with the smallest practical cost.
 
     Args:
-        conversation_manager: 调用方传入的自定义 manager；未传入时使用默认摘要型 manager。
+        conversation_manager: Caller-provided custom manager; falls back to the
+            default summarizing manager when omitted.
 
     Returns:
-        可供当前会话使用的会话管理器实例。
+        A conversation manager instance ready for the current session.
     """
 
     if conversation_manager is None:
@@ -132,11 +161,11 @@ def bind_event_sink_if_supported(
     conversation_manager: ConversationManager,
     sink: InternalEventSink | None,
 ) -> None:
-    """在支持时给 conversation manager 绑定内部事件 sink。
+    """Bind an internal event sink when the manager supports it.
 
     Args:
-        conversation_manager: 当前会话使用的 manager。
-        sink: 要绑定的事件 sink；传入 `None` 表示清空。
+        conversation_manager: Manager used by the current session.
+        sink: Event sink to bind; `None` clears the binding.
     """
 
     binder = getattr(conversation_manager, "bind_event_sink", None)

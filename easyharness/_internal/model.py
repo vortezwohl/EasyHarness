@@ -1,7 +1,8 @@
-"""Strands 模型桥接层。
+"""Bridge from public model config to the Strands model runtime.
 
-本模块负责把公开 `ModelConfig` 转成底层 `LiteLLMModel`。SDK 只依赖显式
-传入的参数，不读取环境变量，也不引入 channel/profile 之类的间接配置层。
+This module turns public `ModelConfig` values into a concrete
+`LiteLLMModel`. The SDK relies only on explicit inputs and does not read
+environment variables or introduce extra channel/profile indirection.
 """
 
 from __future__ import annotations
@@ -12,13 +13,13 @@ from .types import ModelConfig
 
 
 def build_runtime_model(config: ModelConfig) -> LiteLLMModel:
-    """根据公开配置构造底层 LiteLLM 模型对象。
+    """Build the underlying LiteLLM model from public configuration.
 
     Args:
-        config: SDK 公开的模型配置。
+        config: Public SDK model configuration.
 
     Returns:
-        已配置好的 `LiteLLMModel` 实例。
+        A configured `LiteLLMModel` instance.
     """
 
     params: dict[str, object] = {
