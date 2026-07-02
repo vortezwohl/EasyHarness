@@ -190,6 +190,7 @@ def build_runtime_model(config: ModelConfig) -> LiteLLMModel:
         client_args={
             "api_key": config.api_key,
             "base_url": config.base_url,
+            "custom_llm_provider": "openai",
         },
         model_id=config.model,
         params=params,

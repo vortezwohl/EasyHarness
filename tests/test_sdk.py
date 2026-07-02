@@ -320,6 +320,8 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(
             override_model.client_args["base_url"], "https://api.deepseek.com/v1"
         )
+        self.assertEqual(default_model.client_args["custom_llm_provider"], "openai")
+        self.assertEqual(override_model.client_args["custom_llm_provider"], "openai")
         self.assertEqual(default_model.get_config()["params"]["temperature"], 0.01)
         self.assertEqual(default_model.get_config()["params"]["top_p"], 0.01)
 
