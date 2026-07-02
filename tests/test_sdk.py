@@ -13,6 +13,7 @@ from unittest import mock
 
 from pydantic import BaseModel
 from strands.agent.conversation_manager import ConversationManager
+from strands.models.litellm import LiteLLMModel
 from strands.models.model import Model
 from strands.types.content import Messages, SystemContentBlock
 from strands.types.exceptions import ContextWindowOverflowException
@@ -322,6 +323,68 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(default_model.get_config()["params"]["temperature"], 0.01)
         self.assertEqual(default_model.get_config()["params"]["top_p"], 0.01)
 
+    def test_deepseek_runtime_model_preserves_reasoning_for_tool_calls(self) -> None:
+        """DeepSeek tool-call 历史应保留后续请求所需的 reasoning 内容。"""
+
+        deepseek_model = build_runtime_model(
+            ModelConfig(
+                model="deepseek-v4-pro",
+                api_key="k",
+                base_url="https://api.deepseek.com/v1",
+            )
+        )
+        fallback_model = build_runtime_model(
+            ModelConfig(
+                model="openai/gpt-4.1-mini",
+                api_key="k",
+                base_url="https://api.deepseek.com/v1",
+            )
+        )
+        messages: Messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "reasoningContent": {
+                            "reasoningText": {"text": "先调用工具"}
+                        }
+                    },
+                    {
+                        "toolUse": {
+                            "toolUseId": "tool-1",
+                            "name": "echo_tool",
+                            "input": {"text": "pong"},
+                        }
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "toolResult": {
+                            "toolUseId": "tool-1",
+                            "status": "success",
+                            "content": [{"text": "done"}],
+                        }
+                    }
+                ],
+            },
+            {"role": "user", "content": [{"text": "继续"}]},
+        ]
+
+        deepseek_messages = deepseek_model.format_request_messages(messages)
+
+        self.assertIsInstance(deepseek_model, LiteLLMModel)
+        self.assertIs(type(fallback_model), LiteLLMModel)
+        self.assertEqual(deepseek_messages[0]["reasoning_content"], "先调用工具")
+        self.assertEqual(deepseek_messages[0]["content"], "")
+        self.assertEqual(
+            deepseek_messages[0]["tool_calls"][0]["function"]["name"],
+            "echo_tool",
+        )
+        self.assertEqual(deepseek_messages[1]["role"], "tool")
+
     def test_tool_contract_validation_and_tooloutput_events(self) -> None:
         """工具合同应严格校验，并保留 ToolOutput 的 preview/detail 语义。"""
 
@@ -339,6 +402,30 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 return text
 
         @tool(
+            name="ping_tool",
+            purpose="返回固定文本。",
+            when_to_use="当模型需要一个无需输入的探活工具时使用。",
+            parameters={},
+            returns="返回固定文本 pong。",
+            common_failures=["不会失败"],
+        )
+        def ping_tool() -> str:
+            return "pong"
+
+        with self.assertRaisesRegex(ValueError, "Missing parameter docs"):
+
+            @tool(
+                name="still_bad_tool",
+                purpose="测试",
+                when_to_use="测试",
+                parameters={},
+                returns="测试",
+                common_failures=["失败"],
+            )
+            def _still_bad_tool(text: str) -> str:
+                return text
+
+        @tool(
             name="echo_tool",
             purpose="返回固定 ToolOutput。",
             when_to_use="当模型需要演示工具事件时使用。",
@@ -353,6 +440,8 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 preview=f"preview:{text}",
                 detail=f"detail:{text}",
             )
+
+        self.assertEqual(ping_tool(), "pong")
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",

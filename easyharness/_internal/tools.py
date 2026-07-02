@@ -421,7 +421,7 @@ def tool(
             raise ValueError(f"{field_name} must be a non-empty string")
 
     parameter_docs = {key: value for key, value in dict(parameters).items()}
-    if not parameter_docs or any(
+    if any(
         not key or not str(value).strip() for key, value in parameter_docs.items()
     ):
         raise ValueError(
