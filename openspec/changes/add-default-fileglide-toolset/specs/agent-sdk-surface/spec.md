@@ -15,11 +15,11 @@
 `Agent` MUST expose an explicit constructor parameter that allows callers to disable the default fileglide-based file toolset. When that parameter is disabled, the SDK MUST NOT auto-load the official file tools.
 
 #### Scenario: Developer disables default file tools
-- **WHEN** a developer constructs `Agent(..., enable_file_tools=False)`
+- **WHEN** a developer constructs `Agent(..., enable_fileglide=False)`
 - **THEN** the agent MUST omit the default official fileglide-based file toolset
 
 #### Scenario: Developer disables defaults and passes custom tools
-- **WHEN** a developer constructs `Agent(..., enable_file_tools=False, tools=[custom_tool])`
+- **WHEN** a developer constructs `Agent(..., enable_fileglide=False, tools=[custom_tool])`
 - **THEN** the agent MUST include the supplied custom tools without re-adding the default official file tools
 
 ### Requirement: Explicit caller tools MUST take precedence over default file tools

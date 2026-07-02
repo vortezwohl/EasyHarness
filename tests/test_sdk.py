@@ -655,7 +655,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             disabled_agent = Agent(
                 model=ModelConfig(model="fake", api_key="fake"),
                 system_prompt="test",
-                enable_file_tools=False,
+                enable_fileglide=False,
             )
             overridden_agent = Agent(
                 model=ModelConfig(model="fake", api_key="fake"),

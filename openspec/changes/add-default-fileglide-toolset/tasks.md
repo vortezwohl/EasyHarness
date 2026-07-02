@@ -13,9 +13,9 @@
 
 ## 3. Agent Default Loading
 
-- [x] 3.1 在 `Agent` 构造入口增加 `enable_file_tools` 开关，默认启用官方文件工具集
+- [x] 3.1 在 `Agent` 构造入口增加 `enable_fileglide` 开关，默认启用官方文件工具集
 - [x] 3.2 实现默认工具与显式传入工具的合并逻辑，并在同名冲突时让调用方显式工具优先
-- [x] 3.3 在 `enable_file_tools=False` 时完全禁用默认文件工具自动装载
+- [x] 3.3 在 `enable_fileglide=False` 时完全禁用默认文件工具自动装载
 
 ## 4. Verification
 

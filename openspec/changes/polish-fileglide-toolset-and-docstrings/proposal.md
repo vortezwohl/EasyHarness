@@ -20,6 +20,6 @@
 ## Impact
 
 - 受影响代码主要位于 `easyharness/toolset/fileglide.py`、`easyharness/toolset/__init__.py`、`easyharness/_internal/runtime.py` 与 `tests/test_sdk.py`，并会波及 README 中对默认文件工具的示例说明。
-- `build_fileglide_tools()` 返回的工具名，以及 `Agent(enable_file_tools=True)` 时默认暴露给模型的工具名，将从 `fs_*` 切换为 `fileglide_*`。
+- `build_fileglide_tools()` 返回的工具名，以及 `Agent(enable_fileglide=True)` 时默认暴露给模型的工具名，将从 `fs_*` 切换为 `fileglide_*`。
 - `easyharness/` 下 Python 源码的文件头说明、docstring 与关键维护注释将整体改为 en-us；运行时字符串是否改动仍以外部契约为准，不做无边界的全仓库翻译。
 - 不新增根包导出，也不改变 `easyharness.__all__` 的最小公开面约束。

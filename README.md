@@ -84,7 +84,7 @@ agent = Agent(
         api_key="YOUR_API_KEY",
     ),
     system_prompt="你是一个严谨的 coding agent。",
-    enable_file_tools=False,
+    enable_fileglide=False,
 )
 ```
 
@@ -103,7 +103,7 @@ agent = Agent(
         api_key="YOUR_API_KEY",
     ),
     system_prompt="你是一个严谨的 coding agent。",
-    enable_file_tools=False,
+    enable_fileglide=False,
     tools=build_fileglide_tools(root="D:/Projects/PythonProjects/EasyHarness"),
 )
 ```

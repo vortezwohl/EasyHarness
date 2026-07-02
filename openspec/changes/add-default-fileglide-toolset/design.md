@@ -100,7 +100,7 @@ easyharness/
 
 在 `Agent` 构造参数中新增一个布尔开关，推荐命名为：
 
-- `enable_file_tools: bool = True`
+- `enable_fileglide: bool = True`
 
 语义为：
 
@@ -162,7 +162,7 @@ from easyharness.toolset import build_fileglide_tools
 agent = Agent(
     model=model,
     system_prompt=prompt,
-    enable_file_tools=False,
+    enable_fileglide=False,
     tools=build_fileglide_tools(root="D:/Projects/PythonProjects/EasyHarness"),
 )
 ```
@@ -186,7 +186,7 @@ agent = Agent(
 ## Migration Plan
 
 1. 新增 `easyharness.toolset` 子包与 fileglide 适配层，不触碰根包公开导出。
-2. 在 `Agent` 中增加默认文件工具装载逻辑与 `enable_file_tools` 开关。
+2. 在 `Agent` 中增加默认文件工具装载逻辑与 `enable_fileglide` 开关。
 3. 先补默认工具集与禁用开关的规格和测试，再补 README 示例与行为说明。
 4. 更新现有“v1 不提供默认业务工具包”的文档表述，改为“core 根包不导出工具包，但内置官方 file toolset 出厂配置”。
 5. 若实现阶段发现默认工具数量仍然过多，优先继续收缩默认集合，而不是追加更多构造参数。

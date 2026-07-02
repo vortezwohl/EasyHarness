@@ -8,7 +8,7 @@ EasyHarness MUST expose the official curated fileglide toolset under stable `fil
 - **THEN** the returned collection MUST expose exactly the official public names `fileglide_list_tree`, `fileglide_search_paths`, `fileglide_read_text`, `fileglide_search_text`, `fileglide_edit_text`, `fileglide_manage_paths`, and `fileglide_inspect_path`
 
 #### Scenario: Default auto-load uses the renamed override points
-- **WHEN** a developer constructs `Agent(enable_file_tools=True, tools=[custom_tool])` and `custom_tool` publishes the name `fileglide_read_text`
+- **WHEN** a developer constructs `Agent(enable_fileglide=True, tools=[custom_tool])` and `custom_tool` publishes the name `fileglide_read_text`
 - **THEN** the explicit tool MUST override the default renamed read tool while the agent continues to auto-load the remaining official `fileglide_*` tools
 
 ### Requirement: Legacy `fs_*` aliases MUST NOT remain part of the official tool contract

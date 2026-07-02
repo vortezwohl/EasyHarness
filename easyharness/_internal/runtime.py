@@ -55,7 +55,7 @@ def _tool_public_name(tool_obj: object) -> str:
 def _merge_default_file_tools(
     *,
     tools: list[object] | None,
-    enable_file_tools: bool,
+    enable_fileglide: bool,
 ) -> list[object]:
     """Merge explicit tools with the default fileglide toolset.
 
@@ -64,7 +64,7 @@ def _merge_default_file_tools(
     """
 
     merged_tools = list(tools or [])
-    if not enable_file_tools:
+    if not enable_fileglide:
         return merged_tools
 
     from easyharness.toolset import build_fileglide_tools
@@ -445,7 +445,7 @@ class Agent:
         model: Public model configuration.
         system_prompt: System prompt used by the current session.
         tools: Tools available to the current agent.
-        enable_file_tools: Whether to auto-load the official file toolset.
+        enable_fileglide: Whether to auto-load the official fileglide toolset.
         conversation_manager: Optional custom conversation manager. The default
             summarizing manager is used when omitted.
     """
@@ -455,7 +455,7 @@ class Agent:
         model: ModelConfig,
         system_prompt: str,
         tools: list[object] | None = None,
-        enable_file_tools: bool = True,
+        enable_fileglide: bool = True,
         conversation_manager: ConversationManager | None = None,
     ) -> None:
         """Initialize a session-oriented agent."""
@@ -465,7 +465,7 @@ class Agent:
             system_prompt=system_prompt,
             tools=_merge_default_file_tools(
                 tools=tools,
-                enable_file_tools=enable_file_tools,
+                enable_fileglide=enable_fileglide,
             ),
             conversation_manager=conversation_manager,
         )
