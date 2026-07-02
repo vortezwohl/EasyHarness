@@ -4,24 +4,24 @@
 TBD - created by archiving change clean-easyharness-sdk-quality. Update Purpose after archive.
 ## Requirements
 ### Requirement: EasyHarness Python documentation SHALL follow repository language policy
-EasyHarness Python file headers, docstrings, and key maintenance comments MUST follow the repository default language policy and therefore remain Chinese unless a narrower technical requirement explicitly calls for English.
+EasyHarness Python file headers, docstrings, and key maintenance comments MUST follow the repository language policy and therefore default to en-us across `easyharness/`, unless a narrower external contract requires another language inside the affected code surface.
 
 #### Scenario: Maintainer writes a module docstring
-- **WHEN** a maintainer adds or updates a Python file header, docstring, or explanatory maintenance comment
-- **THEN** that text MUST default to Chinese rather than being converted to English for style alone
+- **WHEN** a maintainer adds or updates a Python file header, docstring, or explanatory maintenance comment in `easyharness/`
+- **THEN** that text MUST default to en-us rather than Chinese
 
-#### Scenario: Cleanup proposes all-English conversion
+#### Scenario: Cleanup encounters legacy Chinese documentation
 - **WHEN** a cleanup pass encounters Chinese docstrings or comments in EasyHarness Python files
-- **THEN** it MUST NOT convert them to English unless the project language rules are separately changed first
+- **THEN** it MUST convert those maintenance texts to en-us as part of bringing the code back into policy compliance
 
 ### Requirement: English strings SHALL be reserved for technical boundary cases
-EasyHarness MUST reserve English strings for cases where the text is part of a model-facing prompt contract, a third-party protocol field, a standardized external interface, or a test assertion that intentionally validates English output.
+The en-us documentation rule applies directly to maintainer-facing Python comments and docstrings. Model-facing prompts, protocol field names, structured runtime payloads, and test assertions MUST keep the language required by their external interface or validation contract, and MUST NOT be rewritten solely for documentation-style consistency.
 
 #### Scenario: Tool description is visible to the model
 - **WHEN** a string is constructed specifically for model-facing tool instructions or protocol interoperability
-- **THEN** English MAY be used or retained if it is the most compatible representation for that boundary
+- **THEN** the implementation MAY keep or convert that boundary string according to the tool contract, rather than because Python documentation now defaults to en-us
 
-#### Scenario: Internal maintenance message is not externally constrained
-- **WHEN** a string is only used for internal developer understanding, validation feedback, or repository-local documentation
-- **THEN** the cleanup implementation MUST prefer Chinese to stay consistent with the repository default
+#### Scenario: Internal maintenance text is not externally constrained
+- **WHEN** a string exists only for internal maintainer understanding as a Python file header, docstring, or explanatory maintenance comment
+- **THEN** the codebase MUST prefer en-us so that EasyHarness maintenance documentation stays consistent
 
