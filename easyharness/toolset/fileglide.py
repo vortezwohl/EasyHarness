@@ -19,6 +19,29 @@ from fileglide.serializers import to_primitive
 from easyharness._internal.tools import tool
 from easyharness._internal.types import ToolOutput
 
+SCOPED_PATH_CONSTRAINT = (
+    "Relative and absolute paths are accepted, but the path MUST stay within "
+    "the configured scope."
+)
+ROOT_ACCESS_RULE = (
+    'Callers MUST NOT use ".." path segments to escape the current scope or '
+    "reach a parent directory. Callers MUST use an explicit `root` argument "
+    "when they need to access a parent directory or any path outside the "
+    "current default root."
+)
+ROOT_PARAMETER_DESCRIPTION = (
+    "Optional explicit root for this call. When provided, it overrides the "
+    "toolset default root without SDK-level path-range restrictions. "
+    f"{ROOT_ACCESS_RULE}"
+)
+ROOT_RULE_FAILURE = (
+    'Using ".." path segments to reach a parent directory is invalid; callers '
+    "MUST provide an explicit `root` argument instead."
+)
+NORMALIZED_RESULT_CONTRACT = (
+    "The result MUST remain a normalized EasyHarness result payload."
+)
+
 
 def _normalize_patterns(patterns: list[str] | None) -> tuple[str, ...]:
     """Return a stable tuple of non-empty include or exclude patterns."""
@@ -169,6 +192,24 @@ def _resolve_effective_root(
     return facade.scope.normalize_root(root)
 
 
+def _with_root_parameter(parameters: dict[str, str]) -> dict[str, str]:
+    """Return parameters extended with the shared explicit-root contract."""
+
+    return {**parameters, "root": ROOT_PARAMETER_DESCRIPTION}
+
+
+def _normalized_returns(description: str) -> str:
+    """Append the shared normalized-output contract to a return description."""
+
+    return f"{description} {NORMALIZED_RESULT_CONTRACT}"
+
+
+def _with_root_failures(*failures: str) -> list[str]:
+    """Append the shared explicit-root failure guidance."""
+
+    return [*failures, ROOT_RULE_FAILURE]
+
+
 def build_fileglide_tools(default_root: str | Path | None = None) -> list[object]:
     """Build the official curated fileglide toolset.
 
@@ -196,30 +237,25 @@ def build_fileglide_tools(default_root: str | Path | None = None) -> list[object
             "structure, inspect which files exist under a directory, or build "
             "tree context before editing."
         ),
-        parameters={
+        parameters=_with_root_parameter(
+            {
             "start": (
-                "Traversal starting point. Relative and absolute paths are "
-                "accepted, but the path must stay within the configured scope."
+                f"Traversal starting point. {SCOPED_PATH_CONSTRAINT}"
             ),
             "kind": "Entry type filter: all, file, or directory.",
             "recursive": "Whether to recurse into child directories.",
             "max_depth": "Maximum recursion depth, or None for no explicit cap.",
             "include": "Optional include patterns that match names or paths.",
             "exclude": "Optional exclude patterns that match names or paths.",
-            "root": (
-                "Optional explicit root for this call. When provided, it "
-                "overrides the toolset default root without SDK-level path "
-                "range restrictions."
-            ),
-        },
-        returns=(
-            "A structured tree listing with entry metadata and a normalized "
-            "JSON-safe EasyHarness result payload."
+            }
         ),
-        common_failures=[
+        returns=_normalized_returns(
+            "A structured tree listing with entry metadata."
+        ),
+        common_failures=_with_root_failures(
             "The starting path does not exist or escapes the configured scope.",
             "The kind argument is invalid.",
-        ],
+        ),
     )
     def fileglide_list_tree(
         start: str = ".",
@@ -262,12 +298,12 @@ def build_fileglide_tools(default_root: str | Path | None = None) -> list[object
             "Use this when the model knows an approximate file name, module "
             "name, or path fragment but does not know the exact location yet."
         ),
-        parameters={
+        parameters=_with_root_parameter(
+            {
             "query": "Search text used to find matching paths.",
             "mode": "Search mode: exact, contains, or fuzzy.",
             "start": (
-                "Search starting point. Relative and absolute paths are "
-                "accepted, but the path must stay within the configured scope."
+                f"Search starting point. {SCOPED_PATH_CONSTRAINT}"
             ),
             "kind": "Target type filter: all, file, or directory.",
             "recursive": "Whether to recurse into child directories.",
@@ -275,20 +311,15 @@ def build_fileglide_tools(default_root: str | Path | None = None) -> list[object
             "include": "Optional include patterns.",
             "exclude": "Optional exclude patterns.",
             "limit": "Maximum number of matches to return.",
-            "root": (
-                "Optional explicit root for this call. When provided, it "
-                "overrides the toolset default root without SDK-level path "
-                "range restrictions."
-            ),
-        },
-        returns=(
-            "A structured match list with scores and a normalized EasyHarness "
-            "result payload."
+            }
         ),
-        common_failures=[
+        returns=_normalized_returns(
+            "A structured match list with scores."
+        ),
+        common_failures=_with_root_failures(
             "The search mode is invalid.",
             "The starting path does not exist or escapes the configured scope.",
-        ],
+        ),
     )
     def fileglide_search_paths(
         query: str,
@@ -337,7 +368,8 @@ def build_fileglide_tools(default_root: str | Path | None = None) -> list[object
             "Use this when the model needs source code, configuration, log, or "
             "documentation content while preserving line and encoding details."
         ),
-        parameters={
+        parameters=_with_root_parameter(
+            {
             "target": "Path to the text file that should be read.",
             "start_line": "Optional first line number. Omit to start at line 1.",
             "end_line": "Optional last line number. Omit to read to the end.",
@@ -345,21 +377,16 @@ def build_fileglide_tools(default_root: str | Path | None = None) -> list[object
                 "Optional explicit encoding. When omitted, fileglide will "
                 "detect the encoding automatically."
             ),
-            "root": (
-                "Optional explicit root for this call. When provided, it "
-                "overrides the toolset default root without SDK-level path "
-                "range restrictions."
-            ),
-        },
-        returns=(
-            "Structured text content, line metadata, encoding details, and a "
-            "normalized EasyHarness result payload."
+            }
         ),
-        common_failures=[
+        returns=_normalized_returns(
+            "Structured text content, line metadata, and encoding details."
+        ),
+        common_failures=_with_root_failures(
             "The target file does not exist.",
             "The target appears to be binary rather than text.",
             "The requested line range is invalid or escapes the configured scope.",
-        ],
+        ),
     )
     def fileglide_read_text(
         target: str,
@@ -398,31 +425,26 @@ def build_fileglide_tools(default_root: str | Path | None = None) -> list[object
             "Use this when the model needs grep-like text search for symbols, "
             "patterns, snippets, or call sites across the scoped workspace."
         ),
-        parameters={
+        parameters=_with_root_parameter(
+            {
             "pattern": "Regular expression used to search text content.",
             "start": (
-                "Search starting point. Relative and absolute paths are "
-                "accepted, but the path must stay within the configured scope."
+                f"Search starting point. {SCOPED_PATH_CONSTRAINT}"
             ),
             "recursive": "Whether to recurse into child directories.",
             "max_depth": "Maximum recursion depth, or None for no explicit cap.",
             "include": "Optional include patterns.",
             "exclude": "Optional exclude patterns.",
             "encoding": "Optional explicit text encoding.",
-            "root": (
-                "Optional explicit root for this call. When provided, it "
-                "overrides the toolset default root without SDK-level path "
-                "range restrictions."
-            ),
-        },
-        returns=(
-            "Structured match results with file paths, line numbers, matched "
-            "text, and a normalized EasyHarness result payload."
+            }
         ),
-        common_failures=[
+        returns=_normalized_returns(
+            "Structured match results with file paths, line numbers, and matched text."
+        ),
+        common_failures=_with_root_failures(
             "The regular expression is invalid.",
             "The starting path does not exist or escapes the configured scope.",
-        ],
+        ),
     )
     def fileglide_search_text(
         pattern: str,
@@ -468,7 +490,8 @@ def build_fileglide_tools(default_root: str | Path | None = None) -> list[object
             "needs precise scoped editing. For higher-risk edits, callers "
             "should read context before writing."
         ),
-        parameters={
+        parameters=_with_root_parameter(
+            {
             "action": "Edit action: write, replace_lines, or insert_anchor.",
             "target": "Path to the text file that should be edited.",
             "content": "Text content to write or insert.",
@@ -482,21 +505,16 @@ def build_fileglide_tools(default_root: str | Path | None = None) -> list[object
                 "Optional explicit encoding. When omitted, fileglide will "
                 "handle encoding automatically."
             ),
-            "root": (
-                "Optional explicit root for this call. When provided, it "
-                "overrides the toolset default root without SDK-level path "
-                "range restrictions."
-            ),
-        },
-        returns=(
-            "Structured edit results with file metadata, encoding details, and "
-            "a normalized EasyHarness result payload."
+            }
         ),
-        common_failures=[
+        returns=_normalized_returns(
+            "Structured edit results with file metadata and encoding details."
+        ),
+        common_failures=_with_root_failures(
             "The action does not match the required parameters.",
             "The target is outside scope or is not editable text.",
             "The line range is invalid or the anchor is not uniquely located.",
-        ],
+        ),
     )
     def fileglide_edit_text(
         action: str,
@@ -587,7 +605,8 @@ def build_fileglide_tools(default_root: str | Path | None = None) -> list[object
             "operations. Delete and move are higher-risk actions, so prefer "
             "dry_run before executing the final change."
         ),
-        parameters={
+        parameters=_with_root_parameter(
+            {
             "action": "Management action: create, exists, delete, or move.",
             "kind": "Target type: file or directory.",
             "target": "Target path used by create, exists, and delete.",
@@ -605,22 +624,17 @@ def build_fileglide_tools(default_root: str | Path | None = None) -> list[object
             ),
             "confirm": "Whether delete or move should perform the real change.",
             "missing_ok": "Whether delete should allow a missing target.",
-            "root": (
-                "Optional explicit root for this call. When provided, it "
-                "overrides the toolset default root without SDK-level path "
-                "range restrictions."
-            ),
-        },
-        returns=(
-            "Structured path-management results with preview information and a "
-            "normalized EasyHarness result payload."
+            }
         ),
-        common_failures=[
+        returns=_normalized_returns(
+            "Structured path-management results with preview information."
+        ),
+        common_failures=_with_root_failures(
             "The action or kind argument is invalid.",
             "Delete or move is rejected without confirm when dry_run is false.",
             "The target escapes scope, already exists, is missing, or has the "
             "wrong type.",
-        ],
+        ),
     )
     def fileglide_manage_paths(
         action: str,
@@ -740,7 +754,8 @@ def build_fileglide_tools(default_root: str | Path | None = None) -> list[object
             "Use this when the model needs path-size information or has to "
             "inspect a byte range from a binary file."
         ),
-        parameters={
+        parameters=_with_root_parameter(
+            {
             "action": "Inspection action: size or read_bytes.",
             "target": "Path that should be inspected.",
             "offset": "Byte offset used by read_bytes.",
@@ -748,21 +763,16 @@ def build_fileglide_tools(default_root: str | Path | None = None) -> list[object
                 "Number of bytes to read for read_bytes, or None to read "
                 "through the end."
             ),
-            "root": (
-                "Optional explicit root for this call. When provided, it "
-                "overrides the toolset default root without SDK-level path "
-                "range restrictions."
-            ),
-        },
-        returns=(
-            "Structured size data or byte-read results with a normalized "
-            "EasyHarness result payload."
+            }
         ),
-        common_failures=[
+        returns=_normalized_returns(
+            "Structured size data or byte-read results."
+        ),
+        common_failures=_with_root_failures(
             "The action argument is invalid.",
             "The target does not exist or escapes the configured scope.",
             "The byte offset is invalid.",
-        ],
+        ),
     )
     def fileglide_inspect_path(
         action: str,

@@ -595,6 +595,16 @@ class EasyHarnessSdkTests(unittest.TestCase):
             for tool_name, tool_obj in tool_map.items():
                 properties = tool_obj.tool_spec["inputSchema"]["json"]["properties"]
                 self.assertIn("root", properties, tool_name)
+                root_description = properties["root"]["description"]
+                self.assertIn('MUST NOT use ".." path segments', root_description)
+                self.assertIn(
+                    "MUST use an explicit `root` argument",
+                    root_description,
+                )
+                self.assertIn(
+                    "MUST remain a normalized EasyHarness result payload.",
+                    tool_obj.tool_spec["description"],
+                )
 
             read_output = tool_map["fileglide_read_text"]("demo.txt")
             self.assertTrue(read_output.data["ok"])
