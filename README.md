@@ -53,6 +53,32 @@ The root package intentionally exposes only five public names:
 Everything else stays behind internal modules or the explicit
 `easyharness.toolset` package.
 
+## Installation
+
+EasyHarness supports both `pip` and `uv`.
+
+### Install with pip
+
+```bash
+pip install -U easyharness
+```
+
+### Install with uv
+
+```bash
+uv add -U easyharness
+```
+
+### Verify the installation
+
+After installation, import the public package surface in Python:
+
+```python
+from easyharness import Agent, ModelConfig, AgentEvent, ToolOutput, tool
+```
+
+If the import succeeds, the SDK is ready to use.
+
 ## Typical Usage
 
 ### 1. Define a tool and run an agent
