@@ -108,6 +108,17 @@ class _PhaseState:
     chunks: list[str]
 
 
+@dataclass(slots=True)
+class _ToolPhaseState:
+    """Track the active public tool phase for cancellation-aware finalization."""
+
+    started_at: str
+    started_monotonic: float
+    name: str | None
+    tool_use_id: str | None
+    tool_input: object | None
+
+
 class _EventMapper:
     """Map low-level runtime events into public `AgentEvent` objects."""
 
@@ -121,6 +132,7 @@ class _EventMapper:
         self._output_queue = output_queue
         self._thinking: _PhaseState | None = None
         self._assistant: _PhaseState | None = None
+        self._tool: _ToolPhaseState | None = None
 
     def _emit(
         self,
@@ -207,6 +219,85 @@ class _EventMapper:
         )
         self._assistant = None
 
+    def _complete_tool_phase(
+        self,
+        *,
+        status: EventStatus,
+        tool_event: dict[str, object] | None = None,
+        text: str | None = None,
+    ) -> None:
+        """Emit the terminal event for the currently tracked tool phase."""
+
+        tracked = self._tool
+        if tracked is None and tool_event is None:
+            return
+
+        started_at = (
+            tracked.started_at
+            if tracked is not None
+            else cast(str | None, tool_event.get("started_at"))
+        )
+        duration_ms = (
+            int((time.perf_counter() - tracked.started_monotonic) * 1000)
+            if tracked is not None
+            else cast(int | None, tool_event.get("duration_ms"))
+        )
+        name = (
+            tracked.name
+            if tracked is not None
+            else cast(str | None, tool_event.get("name"))
+        )
+        tool_use_id = (
+            tracked.tool_use_id
+            if tracked is not None
+            else cast(str | None, tool_event.get("tool_use_id"))
+        )
+        tool_input = (
+            tracked.tool_input
+            if tracked is not None
+            else tool_event.get("input")
+        )
+        output = tool_event.get("output") if tool_event is not None else None
+
+        self._emit(
+            kind="tool",
+            status=status,
+            text=text,
+            name=name,
+            started_at=started_at,
+            duration_ms=duration_ms,
+            data={
+                "tool_use_id": tool_use_id,
+                "input": tool_input,
+                "output": output,
+            },
+        )
+        self._tool = None
+
+    def _emit_system_cancelled(self, text: str | None = None) -> None:
+        """Emit the final public system event for a cancelled invocation."""
+
+        self._emit(
+            kind="system",
+            status="cancelled",
+            text=text,
+            started_at=utc_now_iso(),
+            data={"stop_reason": "cancelled"},
+        )
+
+    def _handle_cancelled_result(self, result: object) -> None:
+        """Convert a cancelled low-level result into public cancelled events."""
+
+        final_text = _extract_message_text(getattr(result, "message", None)) or None
+        if self._tool is not None:
+            self._complete_tool_phase(status="cancelled")
+        elif self._assistant is not None:
+            self._flush_assistant(status="cancelled")
+        elif self._thinking is not None:
+            self._flush_thinking(status="cancelled")
+
+        self._emit_system_cancelled(final_text)
+
     def emit_internal(self, payload: dict[str, object]) -> None:
         """Handle internal events pushed directly by the conversation manager."""
 
@@ -256,21 +347,37 @@ class _EventMapper:
             tool_event = marker.get("easyharness_tool")
             if tool_event:
                 self._flush_thinking()
-                self._emit(
-                    kind="tool",
-                    status=tool_event["status"],
-                    text=tool_event.get("error")
-                    or tool_event.get("output", {}).get("preview")
-                    or tool_event.get("output", {}).get("model_text"),
-                    name=tool_event.get("name"),
-                    started_at=tool_event.get("started_at"),
-                    duration_ms=tool_event.get("duration_ms"),
-                    data={
-                        "tool_use_id": tool_event.get("tool_use_id"),
-                        "input": tool_event.get("input"),
-                        "output": tool_event.get("output"),
-                    },
-                )
+                status = cast(EventStatus, tool_event["status"])
+                if status == "started":
+                    self._tool = _ToolPhaseState(
+                        started_at=cast(str, tool_event["started_at"]),
+                        started_monotonic=time.perf_counter(),
+                        name=cast(str | None, tool_event.get("name")),
+                        tool_use_id=cast(
+                            str | None,
+                            tool_event.get("tool_use_id"),
+                        ),
+                        tool_input=tool_event.get("input"),
+                    )
+                    self._emit(
+                        kind="tool",
+                        status="started",
+                        name=tool_event.get("name"),
+                        started_at=tool_event.get("started_at"),
+                        data={
+                            "tool_use_id": tool_event.get("tool_use_id"),
+                            "input": tool_event.get("input"),
+                            "output": None,
+                        },
+                    )
+                else:
+                    self._complete_tool_phase(
+                        status=status,
+                        tool_event=tool_event,
+                        text=tool_event.get("error")
+                        or tool_event.get("output", {}).get("preview")
+                        or tool_event.get("output", {}).get("model_text"),
+                    )
             return
 
         if "data" in raw_event:
@@ -295,6 +402,9 @@ class _EventMapper:
 
         if "result" in raw_event:
             result = raw_event["result"]
+            if getattr(result, "stop_reason", None) == "cancelled":
+                self._handle_cancelled_result(result)
+                return
             final_text = _extract_message_text(getattr(result, "message", None))
             if self._assistant is None and final_text:
                 self._assistant = self._start_phase()
@@ -357,7 +467,31 @@ class _StrandsRuntime:
         self._conversation_manager_template = conversation_manager
         self._agent: StrandsAgent
         self._conversation_manager: ConversationManager
+        self._state_lock = threading.Lock()
+        self._active_invocations = 0
         self.reset()
+
+    def _begin_invocation(self) -> None:
+        """Mark one public invocation as active for cancellation routing."""
+
+        with self._state_lock:
+            self._active_invocations += 1
+
+    def _end_invocation(self) -> None:
+        """Clear one active public invocation marker."""
+
+        with self._state_lock:
+            if self._active_invocations > 0:
+                self._active_invocations -= 1
+
+    def cancel(self) -> None:
+        """Cancel the current invocation; remain a no-op while idle."""
+
+        with self._state_lock:
+            if self._active_invocations == 0:
+                return
+
+        self._agent.cancel()
 
     def _create_agent(self) -> StrandsAgent:
         """Create a new underlying Strands agent."""
@@ -388,9 +522,14 @@ class _StrandsRuntime:
             Final assistant text for the current turn.
         """
 
+        self._begin_invocation()
         bind_event_sink_if_supported(self._conversation_manager, None)
-        result = self._agent(prompt)
-        return str(result).strip()
+        try:
+            result = self._agent(prompt)
+            return str(result).strip()
+        finally:
+            bind_event_sink_if_supported(self._conversation_manager, None)
+            self._end_invocation()
 
     def stream(self, prompt: str) -> Iterator[AgentEvent]:
         """Return the public event stream as a synchronous generator.
@@ -403,6 +542,7 @@ class _StrandsRuntime:
         """
 
         output_queue: "queue.Queue[object]" = queue.Queue()
+        self._begin_invocation()
 
         def worker() -> None:
             mapper = _EventMapper(output_queue)
@@ -425,9 +565,15 @@ class _StrandsRuntime:
                 mapper.fail(error)
                 output_queue.put(error)
             finally:
+                self._end_invocation()
                 output_queue.put(_STREAM_END)
 
-        threading.Thread(target=worker, daemon=True).start()
+        thread = threading.Thread(target=worker, daemon=True)
+        try:
+            thread.start()
+        except BaseException:
+            self._end_invocation()
+            raise
 
         while True:
             item = output_queue.get()
@@ -493,6 +639,11 @@ class Agent:
         """
 
         yield from self._runtime.stream(prompt)
+
+    def cancel(self) -> None:
+        """Cancel the current invocation; do nothing while idle."""
+
+        self._runtime.cancel()
 
     def reset(self) -> None:
         """Clear the current session state and start a new session."""

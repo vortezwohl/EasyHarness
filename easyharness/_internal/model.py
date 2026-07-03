@@ -10,8 +10,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from strands.models.litellm import LiteLLMModel
 from strands.models._validation import _has_location_source
+from strands.models.litellm import LiteLLMModel
 from strands.types.content import ContentBlock, Messages, SystemContentBlock
 
 from easyharness._internal.types import ModelConfig
@@ -75,7 +75,7 @@ class _DeepSeekLiteLLMModel(LiteLLMModel):
 
     @classmethod
     def _format_regular_messages(
-        cls, messages: Messages, **kwargs: Any
+        cls, messages: Messages, **kwargs: object
     ) -> list[dict[str, Any]]:
         """Format messages without dropping reasoning tied to tool calls."""
 
@@ -94,7 +94,8 @@ class _DeepSeekLiteLLMModel(LiteLLMModel):
                     continue
                 if _has_location_source(content):
                     logger.warning(
-                        "Location sources are not supported by OpenAI | skipping content block"
+                        "Location sources are not supported by OpenAI | "
+                        "skipping content block"
                     )
                     continue
                 filtered_contents.append(content)
@@ -117,7 +118,11 @@ class _DeepSeekLiteLLMModel(LiteLLMModel):
             formatted_message: dict[str, Any] = {
                 "role": message["role"],
                 **({"content": formatted_contents} if formatted_contents else {}),
-                **({"tool_calls": formatted_tool_calls} if formatted_tool_calls else {}),
+                **(
+                    {"tool_calls": formatted_tool_calls}
+                    if formatted_tool_calls
+                    else {}
+                ),
             }
 
             if message["role"] == "assistant" and formatted_tool_calls:
@@ -147,7 +152,7 @@ class _DeepSeekLiteLLMModel(LiteLLMModel):
         system_prompt: str | None = None,
         *,
         system_prompt_content: list[SystemContentBlock] | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> list[dict[str, Any]]:
         """Format a DeepSeek-compatible messages array."""
 

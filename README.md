@@ -254,6 +254,45 @@ agent = Agent(
 )
 ```
 
+## Cancellation
+
+EasyHarness exposes explicit cooperative cancellation through `Agent.cancel()`.
+
+Use it when the current invocation is still running and the caller wants to
+stop it without reaching into internal runtime objects:
+
+```python
+import threading
+import time
+
+from easyharness import Agent, ModelConfig
+
+
+agent = Agent(
+    model=ModelConfig(
+        model="openai/gpt-4.1-mini",
+        api_key="YOUR_API_KEY",
+    ),
+    system_prompt="You are a careful agent.",
+)
+
+
+def consume() -> None:
+    for event in agent.stream("Start a long-running task."):
+        print(event.kind, event.status, event.text)
+
+
+worker = threading.Thread(target=consume)
+worker.start()
+time.sleep(1)
+agent.cancel()
+worker.join()
+```
+
+Calling `agent.cancel()` while idle is a no-op. After cancellation, the same
+`Agent` instance remains reusable for the next `run(...)` or `stream(...)`
+call.
+
 ## Event Stream
 
 `agent.stream(prompt)` yields a unified `AgentEvent` stream. The public event
@@ -271,6 +310,7 @@ Each event uses the same status vocabulary:
 - `delta`
 - `completed`
 - `failed`
+- `cancelled`
 
 ```python
 for event in agent.stream("Inspect the workspace and explain the next step."):
@@ -281,6 +321,17 @@ for event in agent.stream("Inspect the workspace and explain the next step."):
 event `data` payload includes the compression mode so UIs can distinguish
 between "compressed early to stay under the limit" and "compressed during
 overflow recovery".
+
+When an invocation is cancelled, the stream exposes cancellation as a first-
+class public outcome:
+
+- the currently active public phase emits a terminal `cancelled` event when a
+  phase was already in progress
+- the stream always ends with `AgentEvent(kind="system", status="cancelled", data={"stop_reason": "cancelled"})`
+
+`run(prompt)` remains the shortest synchronous path for plain text usage, but
+`stream(prompt)` is the authoritative interface for UIs that need complete
+runtime state, phase transitions, and cancellation semantics.
 
 ## Design Boundaries
 

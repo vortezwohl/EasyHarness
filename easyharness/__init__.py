@@ -12,7 +12,7 @@ from ._internal.types import AgentEvent, ModelConfig, ToolOutput
 
 __all__ = ["Agent", "ModelConfig", "AgentEvent", "ToolOutput", "tool"]
 
-__AUTHOR__ = '吴子豪 / Vortez Wohl'
-__EMAIL__ = 'vortez.wohl@gmail.com'
-__GITHUB__ = 'https://github.com/vortezwohl'
-__BLOG__ = 'https://vortezwohl.github.io'
+__AUTHOR__ = "Zihao Wu / Vortez Wohl"
+__EMAIL__ = "vortez.wohl@gmail.com"
+__GITHUB__ = "https://github.com/vortezwohl"
+__BLOG__ = "https://vortezwohl.github.io"

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 EventKind = Literal["thinking", "tool", "assistant", "compress", "system"]
-EventStatus = Literal["started", "delta", "completed", "failed"]
+EventStatus = Literal["started", "delta", "completed", "failed", "cancelled"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -58,11 +58,13 @@ class AgentEvent:
 
     Args:
         kind: Event category such as thinking, tool, or assistant.
-        status: Event phase such as started, delta, completed, or failed.
+        status: Event phase such as started, delta, completed, failed, or
+            cancelled.
         text: Text attached to the event; usually incremental for delta events.
         name: Related object name, for example the tool name.
         started_at: ISO 8601 timestamp for when the phase started.
-        duration_ms: Duration in milliseconds for completed or failed events.
+        duration_ms: Duration in milliseconds for completed, failed, or
+            cancelled events.
         data: Extra payload carrying tool details, compression mode, and more.
     """
 

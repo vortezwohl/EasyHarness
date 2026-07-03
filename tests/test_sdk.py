@@ -6,10 +6,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
 from collections.abc import AsyncGenerator
 import json
 from pathlib import Path
+import queue
+import threading
+import time
 from types import SimpleNamespace
 import tempfile
 from typing import Protocol
@@ -32,6 +36,7 @@ from easyharness._internal.conversation import (
     utc_now_iso,
 )
 from easyharness._internal.model import build_runtime_model
+from easyharness._internal.runtime import _EventMapper
 
 
 def _text_chunk(text: str) -> dict:
@@ -158,6 +163,35 @@ class FakeModel(Model):
         }
 
     @staticmethod
+    async def _emit_slow_text_response(
+        *chunks: str,
+        delay_before_first: float = 0.0,
+        delay_between: float = 0.0,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """按给定节奏发出 assistant 文本响应，便于测试取消路径。"""
+
+        yield {"messageStart": {"role": "assistant"}}
+        yield {"contentBlockStart": {"start": {}}}
+        if delay_before_first > 0:
+            await asyncio.sleep(delay_before_first)
+        for index, chunk in enumerate(chunks):
+            yield _text_chunk(chunk)
+            if delay_between > 0 and index < len(chunks) - 1:
+                await asyncio.sleep(delay_between)
+        yield {"contentBlockStop": {}}
+        yield {"messageStop": {"stopReason": "end_turn"}}
+        yield {
+            "metadata": {
+                "usage": {
+                    "inputTokens": 1,
+                    "outputTokens": 1,
+                    "totalTokens": 2,
+                },
+                "metrics": {},
+            }
+        }
+
+    @staticmethod
     async def _emit_tool_request() -> AsyncGenerator[StreamEvent, None]:
         """发出一条带 reasoning 和 toolUse 的响应。"""
 
@@ -235,6 +269,23 @@ class FakeModel(Model):
 
             if latest_text == "use_tool":
                 async for event in self._emit_tool_request():
+                    yield event
+                return
+
+            if latest_text == "slow_stream":
+                async for event in self._emit_slow_text_response(
+                    "slow-1",
+                    "slow-2",
+                    delay_between=0.2,
+                ):
+                    yield event
+                return
+
+            if latest_text == "slow_start":
+                async for event in self._emit_slow_text_response(
+                    "late",
+                    delay_before_first=0.3,
+                ):
                     yield event
                 return
 
@@ -500,6 +551,157 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(first, "turn:1 first")
         self.assertEqual(second, "turn:2 second")
         self.assertEqual(third, "turn:1 third")
+
+    def test_agent_cancel_is_noop_while_idle(self) -> None:
+        """空闲态 cancel 不应污染后续 invocation。"""
+
+        with mock.patch(
+            "easyharness._internal.runtime.build_runtime_model",
+            return_value=FakeModel(),
+        ):
+            agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+            )
+            agent.cancel()
+            result = agent.run("after-idle-cancel")
+
+        self.assertEqual(result, "turn:1 after-idle-cancel")
+
+    def test_stream_cancel_emits_cancelled_phase_and_system_events(self) -> None:
+        """取消流式输出时应暴露 assistant.cancelled 和 system.cancelled。"""
+
+        with mock.patch(
+            "easyharness._internal.runtime.build_runtime_model",
+            return_value=FakeModel(),
+        ):
+            agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+            )
+            observed = []
+            for event in agent.stream("slow_stream"):
+                observed.append(event)
+                if event.kind == "assistant" and event.status == "delta":
+                    agent.cancel()
+
+            resumed = agent.run("after-stream-cancel")
+
+        self.assertIn(
+            ("assistant", "cancelled"),
+            [(event.kind, event.status) for event in observed],
+        )
+        self.assertIn(
+            ("system", "cancelled"),
+            [(event.kind, event.status) for event in observed],
+        )
+        final_system = next(
+            event
+            for event in reversed(observed)
+            if event.kind == "system" and event.status == "cancelled"
+        )
+        self.assertEqual(final_system.data["stop_reason"], "cancelled")
+        self.assertIn("after-stream-cancel", resumed)
+
+    def test_stream_cancel_before_first_delta_still_emits_system_cancelled(self) -> None:
+        """首个公开 delta 之前取消时也应有最终 system.cancelled。"""
+
+        with mock.patch(
+            "easyharness._internal.runtime.build_runtime_model",
+            return_value=FakeModel(),
+        ):
+            agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+            )
+            observed: list = []
+
+            def consume() -> None:
+                observed.extend(agent.stream("slow_start"))
+
+            worker = threading.Thread(target=consume)
+            worker.start()
+            time.sleep(0.05)
+            agent.cancel()
+            worker.join(timeout=3)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(
+            [(event.kind, event.status) for event in observed],
+            [("system", "cancelled")],
+        )
+
+    def test_run_cancel_returns_cancelled_text_and_agent_stays_usable(self) -> None:
+        """取消同步 run 时应返回取消文本，随后 Agent 仍可继续使用。"""
+
+        with mock.patch(
+            "easyharness._internal.runtime.build_runtime_model",
+            return_value=FakeModel(),
+        ):
+            agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+            )
+            result_holder: dict[str, str] = {}
+
+            def invoke() -> None:
+                result_holder["value"] = agent.run("slow_stream")
+
+            worker = threading.Thread(target=invoke)
+            worker.start()
+            time.sleep(0.05)
+            agent.cancel()
+            worker.join(timeout=3)
+            resumed = agent.run("after-run-cancel")
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result_holder["value"], "Cancelled by user")
+        self.assertIn("after-run-cancel", resumed)
+
+    def test_event_mapper_marks_tool_phase_cancelled_when_result_is_cancelled(
+        self,
+    ) -> None:
+        """mapper 应能把取消结果归一化为 tool.cancelled 与 system.cancelled。"""
+
+        output_queue: queue.Queue[object] = queue.Queue()
+        mapper = _EventMapper(output_queue)
+        mapper.feed(
+            {
+                "type": "tool_stream",
+                "tool_stream_event": {
+                    "data": {
+                        "easyharness_tool": {
+                            "status": "started",
+                            "name": "echo_tool",
+                            "tool_use_id": "tool-1",
+                            "started_at": utc_now_iso(),
+                            "input": {"text": "pong"},
+                        }
+                    }
+                },
+            }
+        )
+        mapper.feed(
+            {
+                "result": SimpleNamespace(
+                    stop_reason="cancelled",
+                    message={"role": "assistant", "content": [{"text": "Cancelled by user"}]},
+                )
+            }
+        )
+
+        observed = []
+        while not output_queue.empty():
+            observed.append(output_queue.get())
+
+        self.assertEqual(
+            [(event.kind, event.status) for event in observed],
+            [
+                ("tool", "started"),
+                ("tool", "cancelled"),
+                ("system", "cancelled"),
+            ],
+        )
 
     def test_default_eventing_manager_owns_compression_defaults(self) -> None:
         """默认事件化摘要 manager 应声明 SDK 自己的压缩默认值。"""
