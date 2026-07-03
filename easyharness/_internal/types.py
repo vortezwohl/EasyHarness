@@ -25,6 +25,8 @@ class ModelConfig:
         temperature: Sampling temperature with a deliberately low default.
         top_p: Nucleus sampling parameter with a deliberately low default.
         seed: Optional random seed; falls back to provider defaults when unset.
+        context_window_limit: Optional explicit context window override used
+            when the caller knows the real model capacity.
     """
 
     model: str
@@ -33,6 +35,7 @@ class ModelConfig:
     temperature: float = 0.01
     top_p: float = 0.01
     seed: int | None = None
+    context_window_limit: int | None = None
 
 
 @dataclass(slots=True, frozen=True)

@@ -214,6 +214,35 @@ result = tool_map["fileglide_read_text"](
 )
 ```
 
+## Model Configuration
+
+`ModelConfig` keeps the public runtime inputs direct and small. Most callers
+only need `model` and `api_key`.
+
+`context_window_limit` is available as an optional override when you already
+know the real model capacity:
+
+```python
+from easyharness import ModelConfig
+
+
+config = ModelConfig(
+    model="openai/gpt-4.1-mini",
+    api_key="YOUR_API_KEY",
+    context_window_limit=131072,
+)
+```
+
+When `context_window_limit` is omitted, EasyHarness resolves it in this order:
+
+- explicit caller value
+- known SDK model metadata
+- fallback value `200000`
+
+Provider-prefixed model IDs such as `openai/gpt-4.1-mini` are normalized during
+metadata lookup, so proactive compression does not depend on downstream warning
+fallbacks.
+
 ## Conversation Compression
 
 EasyHarness uses an eventing summarizing conversation manager by default.

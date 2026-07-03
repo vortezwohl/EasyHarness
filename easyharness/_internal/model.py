@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from strands.models._defaults import get_context_window_limit
 from strands.models._validation import _has_location_source
 from strands.models.litellm import LiteLLMModel
 from strands.types.content import ContentBlock, Messages, SystemContentBlock
@@ -17,6 +18,7 @@ from strands.types.content import ContentBlock, Messages, SystemContentBlock
 from easyharness._internal.types import ModelConfig
 
 logger = logging.getLogger(__name__)
+DEFAULT_CONTEXT_WINDOW_LIMIT = 200_000
 
 
 def _model_mentions_deepseek(model_id: str) -> bool:
@@ -36,6 +38,37 @@ def _base_url_targets_deepseek(base_url: str) -> bool:
     """Return whether the configured base URL points at DeepSeek."""
 
     return "api.deepseek.com" in base_url.strip().lower()
+
+
+def _lookup_context_window_limit(model_id: str) -> int | None:
+    """Resolve a known context window size for the configured model ID."""
+
+    normalized = model_id.strip()
+    if not normalized:
+        return None
+
+    resolved_limit = get_context_window_limit(normalized)
+    if resolved_limit is not None:
+        return resolved_limit
+
+    if "/" not in normalized:
+        return None
+
+    _, normalized_model_id = normalized.split("/", 1)
+    return get_context_window_limit(normalized_model_id)
+
+
+def _resolve_context_window_limit(config: ModelConfig) -> int:
+    """Resolve the runtime context window limit for model construction."""
+
+    if config.context_window_limit is not None:
+        return config.context_window_limit
+
+    resolved_limit = _lookup_context_window_limit(config.model)
+    if resolved_limit is not None:
+        return resolved_limit
+
+    return DEFAULT_CONTEXT_WINDOW_LIMIT
 
 
 def _should_use_deepseek_compat(config: ModelConfig) -> bool:
@@ -185,6 +218,7 @@ def build_runtime_model(config: ModelConfig) -> LiteLLMModel:
     if config.seed is not None:
         params["seed"] = config.seed
 
+    context_window_limit = _resolve_context_window_limit(config)
     model_cls = (
         _DeepSeekLiteLLMModel
         if _should_use_deepseek_compat(config)
@@ -200,4 +234,5 @@ def build_runtime_model(config: ModelConfig) -> LiteLLMModel:
         model_id=config.model,
         params=params,
         stream=True,
+        context_window_limit=context_window_limit,
     )
