@@ -214,6 +214,46 @@ result = tool_map["fileglide_read_text"](
 )
 ```
 
+## Conversation Compression
+
+EasyHarness uses an eventing summarizing conversation manager by default.
+That default policy is owned by the SDK rather than inherited implicitly from
+the current Strands version.
+
+The default compression behavior is:
+
+- proactive compression enabled by default
+- proactive compression threshold at `70%` of the model context window
+- `summary_ratio=0.3`
+- `preserve_recent_messages=8`
+
+This means `agent.stream(...)` may emit `compress` events before a model call
+actually overflows its context window.
+
+If you need a different policy, pass a custom `conversation_manager`. If you
+want to keep the built-in eventing manager but change its defaults, create it
+explicitly and pass it to `Agent`:
+
+```python
+from easyharness import Agent, ModelConfig
+from easyharness._internal.conversation import (
+    EventingSummarizingConversationManager,
+)
+
+
+agent = Agent(
+    model=ModelConfig(
+        model="openai/gpt-4.1-mini",
+        api_key="YOUR_API_KEY",
+    ),
+    system_prompt="You are a careful agent.",
+    conversation_manager=EventingSummarizingConversationManager(
+        proactive_compression=None,
+        preserve_recent_messages=12,
+    ),
+)
+```
+
 ## Event Stream
 
 `agent.stream(prompt)` yields a unified `AgentEvent` stream. The public event
@@ -236,6 +276,11 @@ Each event uses the same status vocabulary:
 for event in agent.stream("Inspect the workspace and explain the next step."):
     print(event.kind, event.status, event.text)
 ```
+
+`compress` events cover both proactive and reactive compression attempts. The
+event `data` payload includes the compression mode so UIs can distinguish
+between "compressed early to stay under the limit" and "compressed during
+overflow recovery".
 
 ## Design Boundaries
 

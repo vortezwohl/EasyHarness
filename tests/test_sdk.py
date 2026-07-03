@@ -10,6 +10,7 @@ import unittest
 from collections.abc import AsyncGenerator
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 from typing import Protocol
 from unittest import mock
@@ -25,7 +26,11 @@ from strands.types.tools import ToolChoice, ToolSpec
 
 import easyharness
 from easyharness import Agent, ModelConfig, ToolOutput, tool
-from easyharness._internal.conversation import InternalEventSink, utc_now_iso
+from easyharness._internal.conversation import (
+    EventingSummarizingConversationManager,
+    InternalEventSink,
+    utc_now_iso,
+)
 from easyharness._internal.model import build_runtime_model
 
 
@@ -67,6 +72,12 @@ class FakeModel(Model):
         """返回测试配置。"""
 
         return self._config
+
+    @property
+    def context_window_limit(self) -> int:
+        """返回测试模型的上下文窗口上限。"""
+
+        return int(self._config["context_window_limit"])
 
     async def structured_output(
         self,
@@ -490,8 +501,17 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(second, "turn:2 second")
         self.assertEqual(third, "turn:1 third")
 
-    def test_default_compress_events_and_failure_semantics(self) -> None:
-        """默认摘要 manager 应发出 compress 事件，并在 reactive 失败时继续抛错。"""
+    def test_default_eventing_manager_owns_compression_defaults(self) -> None:
+        """默认事件化摘要 manager 应声明 SDK 自己的压缩默认值。"""
+
+        manager = EventingSummarizingConversationManager()
+
+        self.assertEqual(manager.summary_ratio, 0.3)
+        self.assertEqual(manager.preserve_recent_messages, 8)
+        self.assertEqual(manager._compression_threshold, 0.7)
+
+    def test_default_compress_events_use_proactive_mode(self) -> None:
+        """默认摘要 manager 应在 proactive 压缩时发出 compress 事件。"""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -501,15 +521,32 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 model=ModelConfig(model="fake", api_key="fake"),
                 system_prompt="test",
             )
-            for index in range(6):
+            for index in range(5):
                 agent.run(f"warmup-{index}")
-            events = list(agent.stream("trigger-overflow"))
+            manager = agent._runtime._conversation_manager
+            raw_events: list[dict[str, object]] = []
+            manager.bind_event_sink(raw_events.append)
+            manager._on_before_model_call_threshold(
+                SimpleNamespace(
+                    agent=agent._runtime._agent,
+                    projected_input_tokens=90,
+                )
+            )
+            manager.bind_event_sink(None)
 
-        compress_statuses = [
-            event.status for event in events if event.kind == "compress"
+        compress_events = [
+            event["easyharness_compress"] for event in raw_events
         ]
+        compress_statuses = [event["status"] for event in compress_events]
+        compress_modes = [event["mode"] for event in compress_events]
         self.assertIn("started", compress_statuses)
         self.assertIn("completed", compress_statuses)
+        self.assertIn("proactive", compress_modes)
+
+    def test_reactive_compress_failure_still_raises_when_proactive_disabled(
+        self,
+    ) -> None:
+        """关闭 proactive 后，reactive 摘要失败仍应继续抛错。"""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -518,6 +555,9 @@ class EasyHarnessSdkTests(unittest.TestCase):
             failed_agent = Agent(
                 model=ModelConfig(model="fake", api_key="fake"),
                 system_prompt="test",
+                conversation_manager=EventingSummarizingConversationManager(
+                    proactive_compression=None,
+                ),
             )
             for index in range(6):
                 failed_agent.run(f"warmup-{index}")
@@ -527,9 +567,15 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 for event in failed_agent.stream("trigger-overflow"):
                     observed.append(event)
 
+        failed_compress_events = [
+            event
+            for event in observed
+            if event.kind == "compress" and event.status == "failed"
+        ]
+        self.assertTrue(failed_compress_events)
         self.assertIn(
-            "failed",
-            [event.status for event in observed if event.kind == "compress"],
+            "reactive",
+            [event.data["mode"] for event in failed_compress_events],
         )
 
     def test_custom_conversation_manager_override(self) -> None:
@@ -551,6 +597,19 @@ class EasyHarnessSdkTests(unittest.TestCase):
             event.data["mode"] for event in events if event.kind == "compress"
         ]
         self.assertIn("custom", compress_modes)
+
+    def test_eventing_manager_allows_explicit_override_values(self) -> None:
+        """调用方应能覆盖默认 proactive 与 retention 配置。"""
+
+        manager = EventingSummarizingConversationManager(
+            summary_ratio=0.5,
+            preserve_recent_messages=12,
+            proactive_compression=None,
+        )
+
+        self.assertEqual(manager.summary_ratio, 0.5)
+        self.assertEqual(manager.preserve_recent_messages, 12)
+        self.assertIsNone(manager._compression_threshold)
 
     def test_toolset_builder_keeps_root_public_surface_minimal(self) -> None:
         """导入 toolset builder 不应扩张根包公开 SDK 名字集。"""
