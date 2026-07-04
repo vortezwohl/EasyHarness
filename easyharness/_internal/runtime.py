@@ -132,7 +132,7 @@ class _EventMapper:
         self._output_queue = output_queue
         self._thinking: _PhaseState | None = None
         self._assistant: _PhaseState | None = None
-        self._tool: _ToolPhaseState | None = None
+        self._active_tools: dict[str, _ToolPhaseState] = {}
 
     def _emit(
         self,
@@ -228,7 +228,16 @@ class _EventMapper:
     ) -> None:
         """Emit the terminal event for the currently tracked tool phase."""
 
-        tracked = self._tool
+        tool_use_id = (
+            cast(str | None, tool_event.get("tool_use_id"))
+            if tool_event is not None
+            else None
+        )
+        tracked = (
+            self._active_tools.pop(tool_use_id)
+            if tool_use_id is not None
+            else None
+        )
         if tracked is None and tool_event is None:
             return
 
@@ -247,10 +256,10 @@ class _EventMapper:
             if tracked is not None
             else cast(str | None, tool_event.get("name"))
         )
-        tool_use_id = (
+        public_tool_use_id = (
             tracked.tool_use_id
             if tracked is not None
-            else cast(str | None, tool_event.get("tool_use_id"))
+            else tool_use_id
         )
         tool_input = (
             tracked.tool_input
@@ -267,12 +276,11 @@ class _EventMapper:
             started_at=started_at,
             duration_ms=duration_ms,
             data={
-                "tool_use_id": tool_use_id,
+                "tool_use_id": public_tool_use_id,
                 "input": tool_input,
                 "output": output,
             },
         )
-        self._tool = None
 
     def _emit_system_cancelled(self, text: str | None = None) -> None:
         """Emit the final public system event for a cancelled invocation."""
@@ -289,8 +297,12 @@ class _EventMapper:
         """Convert a cancelled low-level result into public cancelled events."""
 
         final_text = _extract_message_text(getattr(result, "message", None)) or None
-        if self._tool is not None:
-            self._complete_tool_phase(status="cancelled")
+        if self._active_tools:
+            for tool_use_id in list(self._active_tools):
+                self._complete_tool_phase(
+                    status="cancelled",
+                    tool_event={"tool_use_id": tool_use_id},
+                )
         elif self._assistant is not None:
             self._flush_assistant(status="cancelled")
         elif self._thinking is not None:
@@ -349,16 +361,15 @@ class _EventMapper:
                 self._flush_thinking()
                 status = cast(EventStatus, tool_event["status"])
                 if status == "started":
-                    self._tool = _ToolPhaseState(
-                        started_at=cast(str, tool_event["started_at"]),
-                        started_monotonic=time.perf_counter(),
-                        name=cast(str | None, tool_event.get("name")),
-                        tool_use_id=cast(
-                            str | None,
-                            tool_event.get("tool_use_id"),
-                        ),
-                        tool_input=tool_event.get("input"),
-                    )
+                    tool_use_id = cast(str | None, tool_event.get("tool_use_id"))
+                    if tool_use_id is not None:
+                        self._active_tools[tool_use_id] = _ToolPhaseState(
+                            started_at=cast(str, tool_event["started_at"]),
+                            started_monotonic=time.perf_counter(),
+                            name=cast(str | None, tool_event.get("name")),
+                            tool_use_id=tool_use_id,
+                            tool_input=tool_event.get("input"),
+                        )
                     self._emit(
                         kind="tool",
                         status="started",

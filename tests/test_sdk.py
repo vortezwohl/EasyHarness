@@ -703,6 +703,164 @@ class EasyHarnessSdkTests(unittest.TestCase):
             ],
         )
 
+    def test_event_mapper_keeps_same_name_tool_events_correlated(self) -> None:
+        """同名工具重叠时，终态事件应保持原始 tool_use_id 关联。"""
+
+        output_queue: queue.Queue[object] = queue.Queue()
+        mapper = _EventMapper(output_queue)
+        started_at = utc_now_iso()
+
+        def feed_tool_event(
+            *,
+            status: str,
+            tool_use_id: str,
+            name: str = "echo_tool",
+            output: dict[str, object] | None = None,
+        ) -> None:
+            payload: dict[str, object] = {
+                "status": status,
+                "name": name,
+                "tool_use_id": tool_use_id,
+                "started_at": started_at,
+                "input": {"text": tool_use_id},
+            }
+            if output is not None:
+                payload["output"] = output
+            mapper.feed(
+                {
+                    "type": "tool_stream",
+                    "tool_stream_event": {
+                        "data": {"easyharness_tool": payload}
+                    },
+                }
+            )
+
+        feed_tool_event(status="started", tool_use_id="tool-1")
+        feed_tool_event(status="started", tool_use_id="tool-2")
+        feed_tool_event(
+            status="completed",
+            tool_use_id="tool-1",
+            output={"preview": "done-1"},
+        )
+        feed_tool_event(
+            status="completed",
+            tool_use_id="tool-2",
+            output={"preview": "done-2"},
+        )
+
+        observed = []
+        while not output_queue.empty():
+            observed.append(output_queue.get())
+
+        self.assertEqual(
+            [event.data["tool_use_id"] for event in observed],
+            ["tool-1", "tool-2", "tool-1", "tool-2"],
+        )
+        self.assertEqual(
+            [event.text for event in observed if event.status == "completed"],
+            ["done-1", "done-2"],
+        )
+
+    def test_event_mapper_keeps_different_tool_events_correlated(self) -> None:
+        """异名工具重叠时，终态事件不得串用其他工具身份字段。"""
+
+        output_queue: queue.Queue[object] = queue.Queue()
+        mapper = _EventMapper(output_queue)
+        started_at = utc_now_iso()
+
+        def feed_tool_event(
+            *,
+            status: str,
+            tool_use_id: str,
+            name: str,
+            output: dict[str, object] | None = None,
+        ) -> None:
+            payload: dict[str, object] = {
+                "status": status,
+                "name": name,
+                "tool_use_id": tool_use_id,
+                "started_at": started_at,
+                "input": {"name": name},
+            }
+            if output is not None:
+                payload["output"] = output
+            mapper.feed(
+                {
+                    "type": "tool_stream",
+                    "tool_stream_event": {
+                        "data": {"easyharness_tool": payload}
+                    },
+                }
+            )
+
+        feed_tool_event(status="started", tool_use_id="tool-1", name="tool_alpha")
+        feed_tool_event(status="started", tool_use_id="tool-2", name="tool_beta")
+        feed_tool_event(
+            status="completed",
+            tool_use_id="tool-1",
+            name="tool_alpha",
+            output={"preview": "alpha-done"},
+        )
+
+        observed = []
+        while not output_queue.empty():
+            observed.append(output_queue.get())
+
+        completed_event = observed[-1]
+        self.assertEqual(completed_event.name, "tool_alpha")
+        self.assertEqual(completed_event.data["tool_use_id"], "tool-1")
+        self.assertEqual(completed_event.data["input"], {"name": "tool_alpha"})
+        self.assertEqual(
+            completed_event.data["output"]["preview"],
+            "alpha-done",
+        )
+
+    def test_event_mapper_cancels_each_active_tool_phase(self) -> None:
+        """取消时，所有活动工具阶段都应收到各自的 cancelled 终态。"""
+
+        output_queue: queue.Queue[object] = queue.Queue()
+        mapper = _EventMapper(output_queue)
+        started_at = utc_now_iso()
+
+        for tool_use_id in ("tool-1", "tool-2"):
+            mapper.feed(
+                {
+                    "type": "tool_stream",
+                    "tool_stream_event": {
+                        "data": {
+                            "easyharness_tool": {
+                                "status": "started",
+                                "name": "echo_tool",
+                                "tool_use_id": tool_use_id,
+                                "started_at": started_at,
+                                "input": {"text": tool_use_id},
+                            }
+                        }
+                    },
+                }
+            )
+
+        mapper.feed(
+            {
+                "result": SimpleNamespace(
+                    stop_reason="cancelled",
+                    message={"role": "assistant", "content": [{"text": "Cancelled by user"}]},
+                )
+            }
+        )
+
+        observed = []
+        while not output_queue.empty():
+            observed.append(output_queue.get())
+
+        cancelled_tool_ids = [
+            event.data["tool_use_id"]
+            for event in observed
+            if event.kind == "tool" and event.status == "cancelled"
+        ]
+        self.assertEqual(cancelled_tool_ids, ["tool-1", "tool-2"])
+        self.assertEqual((observed[-1].kind, observed[-1].status), ("system", "cancelled"))
+
     def test_default_eventing_manager_owns_compression_defaults(self) -> None:
         """默认事件化摘要 manager 应声明 SDK 自己的压缩默认值。"""
 
