@@ -17,8 +17,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from types import UnionType
 from typing import (
-    Any,
     Annotated,
+    Any,
     Callable,
     Mapping,
     Sequence,
@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 from strands.types._events import ToolResultEvent
 from strands.types.tools import AgentTool, ToolGenerator, ToolResult, ToolSpec, ToolUse
 
-from easyharness._internal.types import _ToolContextAnnotation, ToolOutput
+from easyharness._internal.types import ToolOutput, _ToolContextAnnotation
 
 RequiredMetadata = Mapping[str, str]
 ToolCallable = Callable[..., object]
@@ -199,7 +199,11 @@ def _tool_context_annotation(annotation: object) -> tuple[object, bool] | None:
     ]
     if not context_arguments:
         return None
-    if len(arguments) != 2 or type(None) not in arguments or len(context_arguments) != 1:
+    if (
+        len(arguments) != 2
+        or type(None) not in arguments
+        or len(context_arguments) != 1
+    ):
         raise ValueError(
             "Tool Context parameters cannot use unions with multiple concrete types; "
             "use ToolContext[PayloadType] or OptionalToolContext[PayloadType]"
@@ -254,7 +258,8 @@ def _optional_context_payload_annotation(annotation: object) -> object:
     arguments = get_args(annotation)
     if len(arguments) != 2 or type(None) not in arguments:
         raise ValueError(
-            "OptionalToolContext[PayloadType] requires exactly one concrete payload type"
+            "OptionalToolContext[PayloadType] requires exactly one concrete "
+            "payload type"
         )
     return next(argument for argument in arguments if argument is not type(None))
 
@@ -266,14 +271,16 @@ def _validate_tool_context_payload_annotation(annotation: object) -> None:
         return
     if annotation is Any or annotation is type(None):
         raise ValueError(
-            "Tool Context payload types must be concrete classes or supported containers"
+            "Tool Context payload types must be concrete classes "
+            "or supported containers"
         )
 
     origin = get_origin(annotation)
     if origin in (Union, UnionType):
         raise ValueError(
-            "ToolContext[PayloadType] requires one concrete payload type and cannot contain unions; "
-            "use OptionalToolContext[PayloadType] for optional injection"
+            "ToolContext[PayloadType] requires one concrete payload type "
+            "and cannot contain unions; use "
+            "OptionalToolContext[PayloadType] for optional injection"
         )
     if origin is dict:
         arguments = get_args(annotation)
@@ -290,6 +297,8 @@ def _validate_tool_context_payload_annotation(annotation: object) -> None:
         return
     if origin is tuple:
         arguments = get_args(annotation)
+        if annotation == tuple[()]:
+            raise ValueError("Tool Context empty fixed tuple payloads are unsupported")
         if not arguments:
             return
         if len(arguments) == 2 and arguments[1] is Ellipsis:
@@ -300,11 +309,13 @@ def _validate_tool_context_payload_annotation(annotation: object) -> None:
         return
     if origin is not None:
         raise ValueError(
-            "Tool Context payload types must be concrete classes or supported containers"
+            "Tool Context payload types must be concrete classes "
+            "or supported containers"
         )
     if not isinstance(annotation, type) or getattr(annotation, "_is_protocol", False):
         raise ValueError(
-            "Tool Context payload types must be concrete classes or supported containers"
+            "Tool Context payload types must be concrete classes "
+            "or supported containers"
         )
 
 
@@ -488,9 +499,13 @@ class _EasyHarnessTool(AgentTool):
             annotation = self._type_hints.get(parameter.name, parameter.annotation)
             context_annotation = _tool_context_annotation(annotation)
             if context_annotation is None:
-                if context_seen and parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD:
+                if (
+                    context_seen
+                    and parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+                ):
                     raise ValueError(
-                        "Tool Context parameters must follow ordinary positional parameters"
+                        "Tool Context parameters must follow ordinary "
+                        "positional parameters"
                     )
                 continue
 
@@ -504,10 +519,7 @@ class _EasyHarnessTool(AgentTool):
             payload_annotation, nullable = context_annotation
             if (
                 parameter.default is not inspect.Parameter.empty
-                and not (
-                    parameter.default is None
-                    and nullable
-                )
+                and not (parameter.default is None and nullable)
                 and not _context_value_matches(parameter.default, payload_annotation)
             ):
                 raise ValueError(
@@ -535,8 +547,7 @@ class _EasyHarnessTool(AgentTool):
             parameter.replace(default=None)
             if context_parameters.get(parameter.name, None) is not None
             and context_parameters[parameter.name].nullable
-            and context_parameters[parameter.name].default
-            is inspect.Parameter.empty
+            and context_parameters[parameter.name].default is inspect.Parameter.empty
             else parameter
             for parameter in self._signature.parameters.values()
         ]
@@ -815,9 +826,7 @@ def tool(
             raise ValueError(f"{field_name} must be a non-empty string")
 
     parameter_docs = {key: value for key, value in dict(parameters).items()}
-    if any(
-        not key or not str(value).strip() for key, value in parameter_docs.items()
-    ):
+    if any(not key or not str(value).strip() for key, value in parameter_docs.items()):
         raise ValueError(
             "parameters must be a complete mapping of non-empty descriptions"
         )

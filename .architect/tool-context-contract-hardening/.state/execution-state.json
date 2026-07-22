@@ -1,0 +1,28 @@
+{
+  "current_task": null,
+  "functional_boundary_decisions": [],
+  "impact_scope_adaptations": [],
+  "plan_digest": "2bd2a06c6cedd98889b9bdc301a06aa8b8b8977e2a0ad96b3f78447fd5877331",
+  "tasks": {
+    "T-001": {
+      "recorded_execution_results": [
+        "Passed: tests.test_sdk.EasyHarnessSdkTests.test_tool_context_rejects_empty_fixed_tuple_at_registration"
+      ],
+      "state": "completed"
+    },
+    "T-002": {
+      "recorded_execution_results": [
+        "Passed: python -m unittest tests.test_sdk (37 tests)"
+      ],
+      "state": "completed"
+    },
+    "T-003": {
+      "recorded_execution_results": [
+        "Passed: ruff check easyharness tests",
+        "Passed: python -m unittest tests.test_sdk (37 tests)",
+        "Passed: git diff --check"
+      ],
+      "state": "completed"
+    }
+  }
+}

@@ -10,6 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
+
+class AgentBusyError(RuntimeError):
+    """Raised when a single-session Agent already has an active invocation."""
+
+
 EventKind = Literal["thinking", "tool", "assistant", "compress", "system"]
 EventStatus = Literal["started", "delta", "completed", "failed", "cancelled"]
 
@@ -60,7 +65,8 @@ class OptionalToolContext:
 
         del args, kwargs
         raise TypeError(
-            "OptionalToolContext is annotation-only; use OptionalToolContext[PayloadType]"
+            "OptionalToolContext is annotation-only; "
+            "use OptionalToolContext[PayloadType]"
         )
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -68,7 +74,8 @@ class OptionalToolContext:
 
         del kwargs
         raise TypeError(
-            "OptionalToolContext cannot be subclassed; use OptionalToolContext[PayloadType]"
+            "OptionalToolContext cannot be subclassed; "
+            "use OptionalToolContext[PayloadType]"
         )
 
     def __class_getitem__(cls, payload_type: object) -> object:

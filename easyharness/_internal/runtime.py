@@ -26,6 +26,7 @@ from easyharness._internal.conversation import (
 )
 from easyharness._internal.model import build_runtime_model
 from easyharness._internal.types import (
+    AgentBusyError,
     AgentEvent,
     EventKind,
     EventStatus,
@@ -513,17 +514,18 @@ class _StrandsRuntime:
         return {"_easyharness_tool_contexts": dict(tool_contexts)}
 
     def _begin_invocation(self) -> None:
-        """Mark one public invocation as active for cancellation routing."""
+        """Acquire the single-session permit or reject a reentrant invocation."""
 
         with self._state_lock:
-            self._active_invocations += 1
+            if self._active_invocations:
+                raise AgentBusyError("Agent already has an active invocation")
+            self._active_invocations = 1
 
     def _end_invocation(self) -> None:
-        """Clear one active public invocation marker."""
+        """Release the single-session permit after an invocation terminates."""
 
         with self._state_lock:
-            if self._active_invocations > 0:
-                self._active_invocations -= 1
+            self._active_invocations = 0
 
     def cancel(self) -> None:
         """Cancel the current invocation; remain a no-op while idle."""
@@ -549,9 +551,12 @@ class _StrandsRuntime:
         )
 
     def reset(self) -> None:
-        """Rebuild the underlying agent and clear session state."""
+        """Rebuild the idle session and reject resets during active invocations."""
 
-        self._agent = self._create_agent()
+        with self._state_lock:
+            if self._active_invocations:
+                raise AgentBusyError("Agent cannot reset while an invocation is active")
+            self._agent = self._create_agent()
 
     def run(self, prompt: str, **tool_contexts: object) -> str:
         """Run one synchronous session turn and return the final text.
@@ -563,10 +568,10 @@ class _StrandsRuntime:
             Final assistant text for the current turn.
         """
 
-        invocation_state = self._invocation_state(tool_contexts)
         self._begin_invocation()
-        bind_event_sink_if_supported(self._conversation_manager, None)
         try:
+            invocation_state = self._invocation_state(tool_contexts)
+            bind_event_sink_if_supported(self._conversation_manager, None)
             result = self._agent(
                 prompt,
                 invocation_state=invocation_state,
@@ -586,39 +591,39 @@ class _StrandsRuntime:
             Unified `AgentEvent` objects.
         """
 
-        invocation_state = self._invocation_state(tool_contexts)
-        output_queue: "queue.Queue[object]" = queue.Queue()
         self._begin_invocation()
-
-        def worker() -> None:
-            mapper = _EventMapper(output_queue)
-
-            async def runner() -> None:
-                bind_event_sink_if_supported(
-                    self._conversation_manager,
-                    mapper.emit_internal,
-                )
-                try:
-                    async for raw_event in self._agent.stream_async(
-                        prompt,
-                        invocation_state=invocation_state,
-                    ):
-                        mapper.feed(raw_event)
-                    mapper.finalize()
-                finally:
-                    bind_event_sink_if_supported(self._conversation_manager, None)
-
-            try:
-                asyncio.run(runner())
-            except BaseException as error:
-                mapper.fail(error)
-                output_queue.put(error)
-            finally:
-                self._end_invocation()
-                output_queue.put(_STREAM_END)
-
-        thread = threading.Thread(target=worker, daemon=True)
         try:
+            invocation_state = self._invocation_state(tool_contexts)
+            output_queue: "queue.Queue[object]" = queue.Queue()
+
+            def worker() -> None:
+                mapper = _EventMapper(output_queue)
+
+                async def runner() -> None:
+                    bind_event_sink_if_supported(
+                        self._conversation_manager,
+                        mapper.emit_internal,
+                    )
+                    try:
+                        async for raw_event in self._agent.stream_async(
+                            prompt,
+                            invocation_state=invocation_state,
+                        ):
+                            mapper.feed(raw_event)
+                        mapper.finalize()
+                    finally:
+                        bind_event_sink_if_supported(self._conversation_manager, None)
+
+                try:
+                    asyncio.run(runner())
+                except BaseException as error:
+                    mapper.fail(error)
+                    output_queue.put(error)
+                finally:
+                    self._end_invocation()
+                    output_queue.put(_STREAM_END)
+
+            thread = threading.Thread(target=worker, daemon=True)
             thread.start()
         except BaseException:
             self._end_invocation()

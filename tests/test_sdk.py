@@ -33,6 +33,7 @@ from strands.types.tools import ToolChoice, ToolSpec
 import easyharness
 from easyharness import (
     Agent,
+    AgentBusyError,
     ModelConfig,
     OptionalToolContext,
     ToolContext,
@@ -388,6 +389,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             set(easyharness.__all__),
             {
                 "Agent",
+                "AgentBusyError",
                 "ModelConfig",
                 "AgentEvent",
                 "ToolContext",
@@ -495,7 +497,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
     def test_agent_context_validation_uses_safe_failures_and_rejects_unknown_names(
         self,
     ) -> None:
-        """Invalid Context values must not execute tools or leak values; unknown names fail early."""
+        """Invalid Context values must fail without executing tools."""
 
         call_count = 0
 
@@ -566,6 +568,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             def invalid_context_payload_union(
                 request: ToolContext[_RequestContext | _AlternateRequestContext],
             ) -> str:
+                del request
                 return "unexpected"
 
         with self.assertRaisesRegex(ValueError, "cannot use unions"):
@@ -581,10 +584,11 @@ class EasyHarnessSdkTests(unittest.TestCase):
             def invalid_context_outer_union(
                 request: ToolContext[_RequestContext] | _AlternateRequestContext,
             ) -> str:
+                del request
                 return "unexpected"
 
     def test_tool_context_registration_rejects_agent_reserved_names(self) -> None:
-        """注册阶段必须拒绝与 Agent 输入冲突的 Context 保留名。"""
+        """Registration must reject Context names reserved for Agent inputs."""
 
         with self.assertRaisesRegex(ValueError, "name 'prompt' is reserved"):
 
@@ -708,7 +712,9 @@ class EasyHarnessSdkTests(unittest.TestCase):
             returns="当前 Context 标识。",
             common_failures="不应失败。",
         )
-        async def concurrent_context_tool(text: str, request: ToolContext[_RequestContext]) -> str:
+        async def concurrent_context_tool(
+            text: str, request: ToolContext[_RequestContext]
+        ) -> str:
             await asyncio.sleep(0)
             observed_request_ids.append(f"{text}:{request.request_id}")
             return request.request_id
@@ -734,7 +740,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(set(observed_request_ids), {"first:ctx-1", "second:ctx-2"})
 
     def test_agent_rejects_conflicting_context_parameter_contracts(self) -> None:
-        """Conflicting Context types with the same registered parameter name must fail at construction."""
+        """Conflicting Context declarations must fail at Agent construction."""
 
         @tool(
             name="first_context_tool",
@@ -837,6 +843,68 @@ class EasyHarnessSdkTests(unittest.TestCase):
             ) -> str:
                 del payload
                 return "unexpected"
+
+    def test_tool_context_rejects_empty_fixed_tuple_at_registration(self) -> None:
+        """Empty fixed tuple Context annotations must fail before tool execution."""
+
+        body_called = False
+
+        with self.assertRaisesRegex(ValueError, "empty fixed tuple"):
+
+            @tool(
+                name="invalid_empty_tuple_context",
+                purpose="Reject an unsupported empty fixed tuple Context annotation.",
+                when_to_use="Use only in tests.",
+                parameters=dict(),
+                returns="No result is expected.",
+                common_failures="Registration must fail.",
+            )
+            def invalid_empty_tuple_context(
+                payload: ToolContext[tuple[()]],
+            ) -> str:
+                nonlocal body_called
+                body_called = True
+                del payload
+                return "unexpected"
+
+        self.assertFalse(body_called)
+
+        @tool(
+            name="bare_tuple_context",
+            purpose="Verify bare tuple Context compatibility.",
+            when_to_use="Use only in tests.",
+            parameters=dict(),
+            returns="The tuple length.",
+            common_failures="The Context payload is invalid.",
+        )
+        def bare_tuple_context(payload: ToolContext[tuple]) -> str:
+            return str(len(payload))
+
+        @tool(
+            name="fixed_tuple_context",
+            purpose="Verify fixed tuple Context compatibility.",
+            when_to_use="Use only in tests.",
+            parameters=dict(),
+            returns="The fixed tuple marker.",
+            common_failures="The Context payload is invalid.",
+        )
+        def fixed_tuple_context(payload: ToolContext[tuple[str, int]]) -> str:
+            return f"{payload[0]}:{payload[1]}"
+
+        @tool(
+            name="variadic_tuple_context",
+            purpose="Verify variadic tuple Context compatibility.",
+            when_to_use="Use only in tests.",
+            parameters=dict(),
+            returns="The variadic tuple length.",
+            common_failures="The Context payload is invalid.",
+        )
+        def variadic_tuple_context(payload: ToolContext[tuple[str, ...]]) -> str:
+            return str(len(payload))
+
+        self.assertEqual(bare_tuple_context(("one", 2)), "2")
+        self.assertEqual(fixed_tuple_context(("marker", 2)), "marker:2")
+        self.assertEqual(variadic_tuple_context(("one", "two")), "2")
 
     def test_context_defaults_and_mixed_agent_contracts(self) -> None:
         """Context defaults and shared Agent names must follow one contract."""
@@ -943,7 +1011,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(default_model.get_config()["params"]["top_p"], 0.01)
 
     def test_deepseek_runtime_model_preserves_reasoning_for_tool_calls(self) -> None:
-        """DeepSeek tool-call history must retain reasoning required by subsequent requests."""
+        """DeepSeek tool-call history must preserve reasoning."""
 
         deepseek_model = build_runtime_model(
             ModelConfig(
@@ -963,11 +1031,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             {
                 "role": "assistant",
                 "content": [
-                    {
-                        "reasoningContent": {
-                            "reasoningText": {"text": "先调用工具"}
-                        }
-                    },
+                    {"reasoningContent": {"reasoningText": {"text": "先调用工具"}}},
                     {
                         "toolUse": {
                             "toolUseId": "tool-1",
@@ -1005,7 +1069,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(deepseek_messages[1]["role"], "tool")
 
     def test_tool_contract_validation_and_tooloutput_events(self) -> None:
-        """Tool contracts must validate strictly and preserve ToolOutput preview and detail semantics."""
+        """Tool contracts must preserve ToolOutput preview and detail."""
 
         with self.assertRaisesRegex(ValueError, "Missing parameter docs"):
 
@@ -1120,8 +1184,40 @@ class EasyHarnessSdkTests(unittest.TestCase):
 
         self.assertEqual(result, "turn:1 after-idle-cancel")
 
+    def test_agent_rejects_reentry_and_releases_after_cancellation(self) -> None:
+        """A busy Agent must reject reentry and later become reusable."""
+
+        with mock.patch(
+            "easyharness._internal.runtime.build_runtime_model",
+            return_value=FakeModel(),
+        ):
+            agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+            )
+            self.assertIs(easyharness.AgentBusyError, AgentBusyError)
+
+            lazy_stream = agent.stream("slow_stream")
+            self.assertIn(
+                "before-stream-consumption", agent.run("before-stream-consumption")
+            )
+            self.assertIsNotNone(next(lazy_stream))
+
+            with self.assertRaises(AgentBusyError):
+                agent.run("reentrant-run")
+            with self.assertRaises(AgentBusyError):
+                agent.reset()
+
+            agent.cancel()
+            list(lazy_stream)
+            self.assertIn("after-stream-cancel", agent.run("after-stream-cancel"))
+
+            with self.assertRaisesRegex(ValueError, "Unknown tool Context parameters"):
+                agent.run("invalid-context", unknown=object())
+            self.assertIn("after-invalid-context", agent.run("after-invalid-context"))
+
     def test_stream_cancel_emits_cancelled_phase_and_system_events(self) -> None:
-        """Cancelling a stream must expose assistant.cancelled and system.cancelled events."""
+        """Stream cancellation must emit assistant and system cancellation events."""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -1155,8 +1251,10 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(final_system.data["stop_reason"], "cancelled")
         self.assertIn("after-stream-cancel", resumed)
 
-    def test_stream_cancel_before_first_delta_still_emits_system_cancelled(self) -> None:
-        """Cancelling before the first public delta must still emit a final system.cancelled event."""
+    def test_stream_cancel_before_first_delta_still_emits_system_cancelled(
+        self,
+    ) -> None:
+        """Cancelling before a first delta must emit a final system event."""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -1184,7 +1282,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         )
 
     def test_run_cancel_returns_cancelled_text_and_agent_stays_usable(self) -> None:
-        """Cancelling a synchronous run must return cancelled text and leave the Agent reusable."""
+        """Cancelling a run must leave the Agent reusable."""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -1213,7 +1311,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
     def test_event_mapper_marks_tool_phase_cancelled_when_result_is_cancelled(
         self,
     ) -> None:
-        """The mapper must normalize a cancelled result into tool.cancelled and system.cancelled."""
+        """The mapper must normalize cancelled tool and system events."""
 
         output_queue: queue.Queue[object] = queue.Queue()
         mapper = _EventMapper(output_queue)
@@ -1237,7 +1335,10 @@ class EasyHarnessSdkTests(unittest.TestCase):
             {
                 "result": SimpleNamespace(
                     stop_reason="cancelled",
-                    message={"role": "assistant", "content": [{"text": "Cancelled by user"}]},
+                    message={
+                        "role": "assistant",
+                        "content": [{"text": "Cancelled by user"}],
+                    },
                 )
             }
         )
@@ -1256,7 +1357,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         )
 
     def test_event_mapper_keeps_same_name_tool_events_correlated(self) -> None:
-        """Overlapping same-name tools must retain their original tool_use_id in terminal events."""
+        """Same-name tool events must retain their original tool-use ID."""
 
         output_queue: queue.Queue[object] = queue.Queue()
         mapper = _EventMapper(output_queue)
@@ -1281,9 +1382,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             mapper.feed(
                 {
                     "type": "tool_stream",
-                    "tool_stream_event": {
-                        "data": {"easyharness_tool": payload}
-                    },
+                    "tool_stream_event": {"data": {"easyharness_tool": payload}},
                 }
             )
 
@@ -1314,7 +1413,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         )
 
     def test_event_mapper_keeps_different_tool_events_correlated(self) -> None:
-        """Overlapping different-name tools must not mix identity fields in terminal events."""
+        """Different tool events must retain distinct identity fields."""
 
         output_queue: queue.Queue[object] = queue.Queue()
         mapper = _EventMapper(output_queue)
@@ -1339,9 +1438,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             mapper.feed(
                 {
                     "type": "tool_stream",
-                    "tool_stream_event": {
-                        "data": {"easyharness_tool": payload}
-                    },
+                    "tool_stream_event": {"data": {"easyharness_tool": payload}},
                 }
             )
 
@@ -1368,7 +1465,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         )
 
     def test_event_mapper_cancels_each_active_tool_phase(self) -> None:
-        """Cancellation must complete every active tool phase with its own cancelled terminal event."""
+        """Cancellation must finish every active tool phase."""
 
         output_queue: queue.Queue[object] = queue.Queue()
         mapper = _EventMapper(output_queue)
@@ -1396,7 +1493,10 @@ class EasyHarnessSdkTests(unittest.TestCase):
             {
                 "result": SimpleNamespace(
                     stop_reason="cancelled",
-                    message={"role": "assistant", "content": [{"text": "Cancelled by user"}]},
+                    message={
+                        "role": "assistant",
+                        "content": [{"text": "Cancelled by user"}],
+                    },
                 )
             }
         )
@@ -1411,10 +1511,12 @@ class EasyHarnessSdkTests(unittest.TestCase):
             if event.kind == "tool" and event.status == "cancelled"
         ]
         self.assertEqual(cancelled_tool_ids, ["tool-1", "tool-2"])
-        self.assertEqual((observed[-1].kind, observed[-1].status), ("system", "cancelled"))
+        self.assertEqual(
+            (observed[-1].kind, observed[-1].status), ("system", "cancelled")
+        )
 
     def test_default_eventing_manager_owns_compression_defaults(self) -> None:
-        """The default eventing summary manager must define SDK-owned compression defaults."""
+        """The default summary manager must own compression defaults."""
 
         manager = EventingSummarizingConversationManager()
 
@@ -1423,7 +1525,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(manager._compression_threshold, 0.7)
 
     def test_default_compress_events_use_proactive_mode(self) -> None:
-        """The default summary manager must emit a compression event for proactive compression."""
+        """Default compression must emit a proactive compression event."""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -1446,9 +1548,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             )
             manager.bind_event_sink(None)
 
-        compress_events = [
-            event["easyharness_compress"] for event in raw_events
-        ]
+        compress_events = [event["easyharness_compress"] for event in raw_events]
         compress_statuses = [event["status"] for event in compress_events]
         compress_modes = [event["mode"] for event in compress_events]
         self.assertIn("started", compress_statuses)
@@ -1458,7 +1558,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
     def test_reactive_compress_failure_still_raises_when_proactive_disabled(
         self,
     ) -> None:
-        """With proactive compression disabled, reactive summary failure must still raise."""
+        """Reactive summary failure must raise without proactive compression."""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -1533,6 +1633,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             set(easyharness.__all__),
             {
                 "Agent",
+                "AgentBusyError",
                 "ModelConfig",
                 "AgentEvent",
                 "ToolContext",
@@ -1543,7 +1644,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         )
 
     def test_fileglide_toolset_contains_expected_tools_and_respects_root(self) -> None:
-        """Official FileGlide tools must include the expected names and honor root scope."""
+        """Official FileGlide tools must honor their root scope."""
 
         from easyharness.toolset import build_fileglide_tools
 
@@ -1640,7 +1741,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             )
 
     def test_fileglide_toolset_normalizes_preview_payloads_as_json(self) -> None:
-        """FileGlide dataclass results must normalize to JSON-serializable structures."""
+        """FileGlide preview payloads must be JSON serializable."""
 
         from easyharness.toolset import build_fileglide_tools
 
@@ -1662,7 +1763,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             json.dumps(preview_output.data, ensure_ascii=False)
 
     def test_agent_loads_default_file_tools_and_allows_override(self) -> None:
-        """An Agent must load official file tools by default and allow disabling or overriding them."""
+        """An Agent must support default file tools and caller overrides."""
 
         @tool(
             name="fileglide_read_text",
