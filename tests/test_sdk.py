@@ -57,6 +57,10 @@ class _RequestContext:
         self.request_id = request_id
 
 
+class _DerivedRequestContext(_RequestContext):
+    """Derived Context payload used to verify parent-class compatibility."""
+
+
 class _AlternateRequestContext:
     """Alternate Context payload used to verify same-name contract conflicts."""
 
@@ -579,6 +583,55 @@ class EasyHarnessSdkTests(unittest.TestCase):
             ) -> str:
                 return "unexpected"
 
+    def test_tool_context_registration_rejects_invalid_parameter_layouts(self) -> None:
+        """Context declarations must use supported parameter kinds and ordering."""
+
+        with self.assertRaisesRegex(ValueError, "positional-only"):
+
+            @tool(
+                name="invalid_positional_only_tool",
+                purpose="Validate positional-only rejection.",
+                when_to_use="Use only in tests.",
+                parameters={"text": "Text input."},
+                returns="No result is expected.",
+                common_failures="Registration must fail.",
+            )
+            def invalid_positional_only_tool(text: str, /) -> str:
+                return text
+
+        with self.assertRaisesRegex(ValueError, "must follow ordinary positional"):
+
+            @tool(
+                name="invalid_context_order",
+                purpose="Validate Context ordering rejection.",
+                when_to_use="Use only in tests.",
+                parameters={"text": "Text input."},
+                returns="No result is expected.",
+                common_failures="Registration must fail.",
+            )
+            def invalid_context_order(
+                request: OptionalToolContext[_RequestContext],
+                text: str,
+            ) -> str:
+                del request
+                return text
+
+        with self.assertRaisesRegex(ValueError, "Default for Context parameter"):
+
+            @tool(
+                name="invalid_context_default",
+                purpose="Validate Context default rejection.",
+                when_to_use="Use only in tests.",
+                parameters=dict(),
+                returns="No result is expected.",
+                common_failures="Registration must fail.",
+            )
+            def invalid_context_default(
+                request: ToolContext[_RequestContext] = _AlternateRequestContext(),
+            ) -> str:
+                del request
+                return "unexpected"
+
     def test_optional_tool_context_uses_none_when_omitted(self) -> None:
         """Optional Context must resolve to None in runtime and direct calls."""
 
@@ -703,6 +756,149 @@ class EasyHarnessSdkTests(unittest.TestCase):
                     tools=[first_context_tool, second_context_tool],
                     enable_fileglide=False,
                 )
+
+    def test_tool_context_deep_payload_validation_and_safe_failures(self) -> None:
+        """Context payloads must validate nested containers without leaking values."""
+
+        @tool(
+            name="deep_context_tool",
+            purpose="Validate deeply nested Context payloads.",
+            when_to_use="Use only in tests.",
+            parameters=dict(),
+            returns="The validated Context marker.",
+            common_failures="The Context payload is invalid.",
+        )
+        def deep_context_tool(
+            payload: ToolContext[dict[str, list[_RequestContext]]],
+            marker: ToolContext[tuple[str, int]],
+            labels: ToolContext[set[str]],
+        ) -> str:
+            return f"{payload['request'][0].request_id}:{marker[0]}:{len(labels)}"
+
+        self.assertEqual(
+            deep_context_tool(
+                {"request": [_DerivedRequestContext("derived")]},
+                ("marker", 2),
+                {"one", "two"},
+            ),
+            "derived:marker:2",
+        )
+        with self.assertRaisesRegex(TypeError, "dict\\[str, list") as error_context:
+            deep_context_tool(
+                {"request": [_AlternateRequestContext()]},
+                ("marker", 2),
+                {"one"},
+            )
+        self.assertNotIn("_AlternateRequestContext", str(error_context.exception))
+
+        @tool(
+            name="object_context_tool",
+            purpose="Validate object Context None compatibility.",
+            when_to_use="Use only in tests.",
+            parameters=dict(),
+            returns="The observed object marker.",
+            common_failures="The object Context is invalid.",
+        )
+        def object_context_tool(value: ToolContext[object]) -> str:
+            return "none" if value is None else "value"
+
+        with self.assertWarnsRegex(RuntimeWarning, "OptionalToolContext"):
+            self.assertEqual(object_context_tool(None), "none")
+
+        with self.assertRaisesRegex(ValueError, "cannot contain unions"):
+
+            @tool(
+                name="invalid_nested_union_context",
+                purpose="Reject nested Context unions.",
+                when_to_use="Use only in tests.",
+                parameters=dict(),
+                returns="No result is expected.",
+                common_failures="Registration must fail.",
+            )
+            def invalid_nested_union_context(
+                payload: ToolContext[list[_RequestContext | _AlternateRequestContext]],
+            ) -> str:
+                del payload
+                return "unexpected"
+
+    def test_context_defaults_and_mixed_agent_contracts(self) -> None:
+        """Context defaults and shared Agent names must follow one contract."""
+
+        default_context = _RequestContext("source-default")
+        observed_request_ids: list[str] = []
+
+        @tool(
+            name="echo_tool",
+            purpose="Use a required Context with a source default.",
+            when_to_use="Use only in tests.",
+            parameters={"text": "Text to return."},
+            returns="The text and resolved Context identifier.",
+            common_failures="The Context must be valid.",
+        )
+        def required_default_context_tool(
+            text: str,
+            request: ToolContext[_RequestContext] = default_context,
+        ) -> str:
+            observed_request_ids.append(request.request_id)
+            return f"{text}:{request.request_id}"
+
+        @tool(
+            name="optional_default_context_tool",
+            purpose="Use an optional Context with a source default.",
+            when_to_use="Use only in tests.",
+            parameters=dict(),
+            returns="The resolved Context identifier.",
+            common_failures="The Context must be valid.",
+        )
+        def optional_default_context_tool(
+            request: OptionalToolContext[_RequestContext] = default_context,
+        ) -> str:
+            return request.request_id
+
+        @tool(
+            name="optional_after_text_context_tool",
+            purpose="Use an optional Context after an ordinary argument.",
+            when_to_use="Use only in tests.",
+            parameters={"text": "Text to return."},
+            returns="The text and optional Context marker.",
+            common_failures="The tool should not fail.",
+        )
+        def optional_after_text_context_tool(
+            text: str,
+            request: OptionalToolContext[_RequestContext],
+        ) -> str:
+            return f"{text}:{'none' if request is None else request.request_id}"
+
+        self.assertEqual(
+            required_default_context_tool("direct"),
+            "direct:source-default",
+        )
+        self.assertEqual(optional_default_context_tool(), "source-default")
+        self.assertEqual(optional_after_text_context_tool("optional"), "optional:none")
+        self.assertIsNone(
+            inspect.signature(optional_after_text_context_tool)
+            .parameters["request"]
+            .default
+        )
+
+        observed_request_ids.clear()
+        with mock.patch(
+            "easyharness._internal.runtime.build_runtime_model",
+            return_value=FakeModel(),
+        ):
+            agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+                tools=[
+                    required_default_context_tool,
+                    optional_default_context_tool,
+                ],
+                enable_fileglide=False,
+            )
+            result = agent.run("use_tool")
+
+        self.assertEqual(result, "tool-result:done")
+        self.assertEqual(observed_request_ids, ["source-default"])
 
     def test_model_config_defaults_and_base_url_override(self) -> None:
         """ModelConfig defaults and explicit base_url overrides must work."""

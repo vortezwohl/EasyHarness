@@ -483,13 +483,13 @@ class _StrandsRuntime:
         self._active_invocations = 0
         self.reset()
 
-    def _build_tool_context_contracts(self) -> dict[str, tuple[type[object], bool]]:
-        """Build the hidden Context contract names declared by registered tools."""
+    def _build_tool_context_contracts(self) -> dict[str, object]:
+        """Build the hidden Context payload contract for registered tools."""
 
-        contracts: dict[str, tuple[type[object], bool]] = dict()
+        contracts: dict[str, object] = dict()
         for tool_obj in self._tools:
             for parameter in getattr(tool_obj, "context_parameters", ()):
-                contract = (parameter.context_type, parameter.nullable)
+                contract = parameter.payload_annotation
                 existing = contracts.get(parameter.name)
                 if existing is not None and existing != contract:
                     raise ValueError(

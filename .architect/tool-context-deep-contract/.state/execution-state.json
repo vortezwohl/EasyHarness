@@ -1,0 +1,32 @@
+{
+  "current_task": null,
+  "functional_boundary_decisions": [],
+  "impact_scope_adaptations": [],
+  "plan_digest": "a47b787addb26dbd1e7c45c84d79bbfb5aba59145a2a1f5202596c291a01db0c",
+  "tasks": {
+    "T-001": {
+      "recorded_execution_results": [
+        "Implemented compiled Context specifications, registration-time kind/order/default validation, and focused registration tests; 9 Context tests passed."
+      ],
+      "state": "completed"
+    },
+    "T-002": {
+      "recorded_execution_results": [
+        "Implemented recursive no-coercion matching for classes and dict/list/tuple/set payloads, object-None migration warning, and focused deep-payload tests; 10 Context tests passed."
+      ],
+      "state": "completed"
+    },
+    "T-003": {
+      "recorded_execution_results": [
+        "Unified direct and Agent Context fallback order, compared same-name contracts by payload only, and added defaults/mixed-optionality coverage; 11 Context tests passed."
+      ],
+      "state": "completed"
+    },
+    "T-004": {
+      "recorded_execution_results": [
+        "Updated the English public Context tutorial; py_compile, 11 focused Context tests, 34 SDK tests, diff checks, and UTF-8 without BOM checks passed. Ruff was unavailable in the configured virtual environment."
+      ],
+      "state": "completed"
+    }
+  }
+}

@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from types import UnionType
 from typing import (
+    Any,
     Annotated,
     Callable,
     Mapping,
@@ -167,24 +168,25 @@ class _ToolMetadata:
 
 @dataclass(frozen=True, slots=True)
 class _ToolContextParameter:
-    """Describe a hidden Context parameter resolved per invocation.
+    """Describe one hidden Context parameter resolved for a tool invocation."""
 
-    The specification is derived from the function signature.
-    """
     name: str
-    context_type: type[object]
+    payload_annotation: object
     nullable: bool
+    default: object
+    kind: inspect._ParameterKind
 
 
-def _tool_context_annotation(
-    annotation: object,
-) -> tuple[type[object], bool] | None:
+class _ToolContextInjectionError(ValueError):
+    """Represent a safe injection failure that does not expose a Context value."""
+
+
+def _tool_context_annotation(annotation: object) -> tuple[object, bool] | None:
     """Recognize and validate annotation-based host Context declarations."""
 
     direct_context = _direct_tool_context_annotation(annotation)
     if direct_context is not None:
-        context_type, optional = direct_context
-        return _validated_tool_context_type(context_type, optional)
+        return direct_context
 
     if get_origin(annotation) not in (Union, UnionType):
         return None
@@ -203,7 +205,7 @@ def _tool_context_annotation(
             "use ToolContext[PayloadType] or OptionalToolContext[PayloadType]"
         )
 
-    context_type, optional = _direct_tool_context_annotation(context_arguments[0])
+    payload_annotation, optional = _direct_tool_context_annotation(context_arguments[0])
     if optional:
         raise ValueError(
             "OptionalToolContext[PayloadType] must not be unioned with None; "
@@ -215,13 +217,11 @@ def _tool_context_annotation(
         DeprecationWarning,
         stacklevel=3,
     )
-    return _validated_tool_context_type(context_type, True)
+    return payload_annotation, True
 
 
-def _direct_tool_context_annotation(
-    annotation: object,
-) -> tuple[object, bool] | None:
-    """Extract private Context metadata from one direct annotation."""
+def _direct_tool_context_annotation(annotation: object) -> tuple[object, bool] | None:
+    """Extract one validated Context payload annotation and optionality marker."""
 
     if get_origin(annotation) is not Annotated:
         return None
@@ -235,20 +235,17 @@ def _direct_tool_context_annotation(
     ]
     if len(markers) != 1:
         return None
-    payload_type = arguments[0]
+
+    payload_annotation = arguments[0]
     marker = markers[0]
     if marker.optional:
-        payload_type = _optional_context_payload_type(payload_type)
-    elif get_origin(payload_type) in (Union, UnionType):
-        raise ValueError(
-            "ToolContext[PayloadType] requires one concrete payload type; "
-            "use OptionalToolContext[PayloadType] for optional injection"
-        )
-    return payload_type, marker.optional
+        payload_annotation = _optional_context_payload_annotation(payload_annotation)
+    _validate_tool_context_payload_annotation(payload_annotation)
+    return payload_annotation, marker.optional
 
 
-def _optional_context_payload_type(annotation: object) -> object:
-    """Extract the single concrete payload type from an optional Context marker."""
+def _optional_context_payload_annotation(annotation: object) -> object:
+    """Extract the concrete payload annotation from an optional Context marker."""
 
     if get_origin(annotation) not in (Union, UnionType):
         raise ValueError(
@@ -262,27 +259,146 @@ def _optional_context_payload_type(annotation: object) -> object:
     return next(argument for argument in arguments if argument is not type(None))
 
 
-def _validated_tool_context_type(
-    context_type: object,
-    optional: bool,
-) -> tuple[type[object], bool]:
-    """Validate that a Context payload can be checked safely at runtime."""
+def _validate_tool_context_payload_annotation(annotation: object) -> None:
+    """Reject payload annotations outside the approved runtime-checkable grammar."""
 
-    if not isinstance(context_type, type):
+    if annotation is object:
+        return
+    if annotation is Any or annotation is type(None):
         raise ValueError(
-            "Tool Context payload types must be concrete runtime-checkable classes"
+            "Tool Context payload types must be concrete classes or supported containers"
         )
-    try:
-        isinstance(None, context_type)
-    except TypeError as error:
+
+    origin = get_origin(annotation)
+    if origin in (Union, UnionType):
         raise ValueError(
-            "Tool Context payload types must support runtime isinstance checks"
-        ) from error
-    return context_type, optional
+            "ToolContext[PayloadType] requires one concrete payload type and cannot contain unions; "
+            "use OptionalToolContext[PayloadType] for optional injection"
+        )
+    if origin is dict:
+        arguments = get_args(annotation)
+        if len(arguments) != 2:
+            raise ValueError("Tool Context dict payloads require key and value types")
+        for argument in arguments:
+            _validate_tool_context_payload_annotation(argument)
+        return
+    if origin in (list, set):
+        arguments = get_args(annotation)
+        if len(arguments) != 1:
+            raise ValueError("Tool Context list and set payloads require one item type")
+        _validate_tool_context_payload_annotation(arguments[0])
+        return
+    if origin is tuple:
+        arguments = get_args(annotation)
+        if not arguments:
+            return
+        if len(arguments) == 2 and arguments[1] is Ellipsis:
+            _validate_tool_context_payload_annotation(arguments[0])
+            return
+        for argument in arguments:
+            _validate_tool_context_payload_annotation(argument)
+        return
+    if origin is not None:
+        raise ValueError(
+            "Tool Context payload types must be concrete classes or supported containers"
+        )
+    if not isinstance(annotation, type) or getattr(annotation, "_is_protocol", False):
+        raise ValueError(
+            "Tool Context payload types must be concrete classes or supported containers"
+        )
 
 
-class _ToolContextInjectionError(ValueError):
-    """Represent a safe injection failure that does not expose a Context value."""
+def _context_value_matches(
+    value: object,
+    annotation: object,
+    active_pairs: set[tuple[int, int]] | None = None,
+) -> bool:
+    """Return whether one Context value matches a supported payload annotation."""
+
+    if annotation is object:
+        return True
+
+    origin = get_origin(annotation)
+    if origin is None:
+        return isinstance(value, annotation)
+    if not isinstance(value, origin):
+        return False
+
+    arguments = get_args(annotation)
+    if not arguments:
+        return True
+
+    if active_pairs is None:
+        active_pairs = set()
+    pair = (id(value), id(annotation))
+    if pair in active_pairs:
+        return True
+    active_pairs.add(pair)
+    try:
+        if origin is dict:
+            key_annotation, value_annotation = arguments
+            return all(
+                _context_value_matches(key, key_annotation, active_pairs)
+                and _context_value_matches(item, value_annotation, active_pairs)
+                for key, item in value.items()
+            )
+        if origin in (list, set):
+            item_annotation = arguments[0]
+            return all(
+                _context_value_matches(item, item_annotation, active_pairs)
+                for item in value
+            )
+        if origin is tuple:
+            if len(arguments) == 2 and arguments[1] is Ellipsis:
+                return all(
+                    _context_value_matches(item, arguments[0], active_pairs)
+                    for item in value
+                )
+            if len(value) != len(arguments):
+                return False
+            return all(
+                _context_value_matches(item, item_annotation, active_pairs)
+                for item, item_annotation in zip(value, arguments)
+            )
+    finally:
+        active_pairs.remove(pair)
+    return False
+
+
+def _context_payload_description(annotation: object) -> str:
+    """Return a safe descriptive label for one expected Context payload."""
+
+    if isinstance(annotation, type):
+        return annotation.__name__
+    return str(annotation).replace("typing.", "")
+
+
+def _validate_context_value(
+    tool_name: str,
+    parameter: _ToolContextParameter,
+    value: object,
+    error_type: type[Exception],
+) -> None:
+    """Validate a resolved Context value without exposing the raw value."""
+
+    if value is None and parameter.nullable:
+        return
+    if not _context_value_matches(value, parameter.payload_annotation):
+        raise error_type(
+            f"Tool {tool_name} requires Context parameter {parameter.name} of type "
+            f"{_context_payload_description(parameter.payload_annotation)}"
+        )
+    if (
+        value is None
+        and not parameter.nullable
+        and parameter.payload_annotation is object
+    ):
+        warnings.warn(
+            "ToolContext[object] received None; use OptionalToolContext[object] "
+            "when None represents optional host injection",
+            RuntimeWarning,
+            stacklevel=4,
+        )
 
 
 class _EasyHarnessTool(AgentTool):
@@ -307,28 +423,28 @@ class _EasyHarnessTool(AgentTool):
         self.__signature__ = self._direct_call_signature()
 
     def __call__(self, *args: object, **kwargs: object) -> object:
-        """Call the original function with normalized direct Context arguments."""
+        """Call the original function with resolved direct Context arguments."""
 
-        bound_arguments = self._signature.bind_partial(*args, **kwargs)
+        bound_arguments = self.__signature__.bind_partial(*args, **kwargs)
         for parameter in self._context_parameters:
             if parameter.name not in bound_arguments.arguments:
-                if parameter.nullable:
-                    bound_arguments.arguments[parameter.name] = None
-                    continue
-                raise TypeError(
-                    f"Tool {self.tool_name} requires Context parameter "
-                    f"{parameter.name} of type "
-                    f"{parameter.context_type.__name__}"
-                )
-            value = bound_arguments.arguments[parameter.name]
-            if value is None and parameter.nullable:
-                continue
-            if not isinstance(value, parameter.context_type):
-                raise TypeError(
-                    f"Tool {self.tool_name} requires Context parameter "
-                    f"{parameter.name} of type "
-                    f"{parameter.context_type.__name__}"
-                )
+                if parameter.default is not inspect.Parameter.empty:
+                    value = parameter.default
+                elif parameter.nullable:
+                    value = None
+                else:
+                    raise TypeError(
+                        f"Tool {self.tool_name} requires Context parameter "
+                        f"{parameter.name} of type "
+                        f"{_context_payload_description(parameter.payload_annotation)}"
+                    )
+                bound_arguments.arguments[parameter.name] = value
+            _validate_context_value(
+                self.tool_name,
+                parameter,
+                bound_arguments.arguments[parameter.name],
+                TypeError,
+            )
         return self._func(*bound_arguments.args, **bound_arguments.kwargs)
 
     @property
@@ -356,29 +472,55 @@ class _EasyHarnessTool(AgentTool):
         return self._context_parameters
 
     def _build_context_parameters(self) -> tuple[_ToolContextParameter, ...]:
-        """Extract non-model Context parameters from a function signature.
-
-        The returned specifications retain their declaration order.
-        """
+        """Extract and validate non-model Context parameters from a signature."""
 
         parameters: list[_ToolContextParameter] = []
+        context_seen = False
         for parameter in self._signature.parameters.values():
+            if parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
+                raise ValueError("tool does not support positional-only parameters")
+            if parameter.kind in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            ):
+                raise ValueError("tool does not support *args or **kwargs")
+
             annotation = self._type_hints.get(parameter.name, parameter.annotation)
             context_annotation = _tool_context_annotation(annotation)
             if context_annotation is None:
+                if context_seen and parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD:
+                    raise ValueError(
+                        "Tool Context parameters must follow ordinary positional parameters"
+                    )
                 continue
-            context_type, nullable = context_annotation
+
+            context_seen = True
+            payload_annotation, nullable = context_annotation
+            if (
+                parameter.default is not inspect.Parameter.empty
+                and not (
+                    parameter.default is None
+                    and nullable
+                )
+                and not _context_value_matches(parameter.default, payload_annotation)
+            ):
+                raise ValueError(
+                    f"Default for Context parameter {parameter.name} must match "
+                    f"{_context_payload_description(payload_annotation)}"
+                )
             parameters.append(
                 _ToolContextParameter(
                     name=parameter.name,
-                    context_type=context_type,
+                    payload_annotation=payload_annotation,
                     nullable=nullable,
+                    default=parameter.default,
+                    kind=parameter.kind,
                 )
             )
         return tuple(parameters)
 
     def _direct_call_signature(self) -> inspect.Signature:
-        """Expose direct-call optional Context defaults through introspection."""
+        """Expose source defaults and optional Context fallbacks to callers."""
 
         context_parameters = dict(
             (parameter.name, parameter) for parameter in self._context_parameters
@@ -387,6 +529,8 @@ class _EasyHarnessTool(AgentTool):
             parameter.replace(default=None)
             if context_parameters.get(parameter.name, None) is not None
             and context_parameters[parameter.name].nullable
+            and context_parameters[parameter.name].default
+            is inspect.Parameter.empty
             else parameter
             for parameter in self._signature.parameters.values()
         ]
@@ -400,10 +544,7 @@ class _EasyHarnessTool(AgentTool):
         self,
         invocation_state: dict[str, object],
     ) -> dict[str, object]:
-        """Resolve and validate private Context values before invocation.
-
-        Values are matched by the hidden parameter name.
-        """
+        """Resolve and validate private Context values before invocation."""
 
         raw_contexts = invocation_state.get("_easyharness_tool_contexts", dict())
         if not isinstance(raw_contexts, Mapping):
@@ -412,25 +553,24 @@ class _EasyHarnessTool(AgentTool):
             )
         resolved: dict[str, object] = dict()
         for parameter in self._context_parameters:
-            if parameter.name not in raw_contexts:
-                if parameter.nullable:
-                    resolved[parameter.name] = None
-                    continue
+            if parameter.name in raw_contexts:
+                value = raw_contexts[parameter.name]
+            elif parameter.default is not inspect.Parameter.empty:
+                value = parameter.default
+            elif parameter.nullable:
+                value = None
+            else:
                 raise _ToolContextInjectionError(
                     f"Tool {self.tool_name} requires Context parameter "
                     f"{parameter.name} of type "
-                    f"{parameter.context_type.__name__}"
+                    f"{_context_payload_description(parameter.payload_annotation)}"
                 )
-            value = raw_contexts[parameter.name]
-            if value is None and parameter.nullable:
-                resolved[parameter.name] = value
-                continue
-            if not isinstance(value, parameter.context_type):
-                raise _ToolContextInjectionError(
-                    f"Tool {self.tool_name} requires Context parameter "
-                    f"{parameter.name} of type "
-                    f"{parameter.context_type.__name__}"
-                )
+            _validate_context_value(
+                self.tool_name,
+                parameter,
+                value,
+                _ToolContextInjectionError,
+            )
             resolved[parameter.name] = value
         return resolved
 
