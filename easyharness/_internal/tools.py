@@ -494,6 +494,12 @@ class _EasyHarnessTool(AgentTool):
                     )
                 continue
 
+            if parameter.name == "prompt":
+                raise ValueError(
+                    "Tool Context parameter name 'prompt' is reserved by "
+                    "Agent.run() and Agent.stream()"
+                )
+
             context_seen = True
             payload_annotation, nullable = context_annotation
             if (

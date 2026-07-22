@@ -583,6 +583,23 @@ class EasyHarnessSdkTests(unittest.TestCase):
             ) -> str:
                 return "unexpected"
 
+    def test_tool_context_registration_rejects_agent_reserved_names(self) -> None:
+        """注册阶段必须拒绝与 Agent 输入冲突的 Context 保留名。"""
+
+        with self.assertRaisesRegex(ValueError, "name 'prompt' is reserved"):
+
+            @tool(
+                name="invalid_prompt_context",
+                purpose="Validate reserved Context name rejection.",
+                when_to_use="Use only in tests.",
+                parameters=dict(),
+                returns="No result is expected.",
+                common_failures="Registration must fail.",
+            )
+            def invalid_prompt_context(prompt: ToolContext[_RequestContext]) -> str:
+                del prompt
+                return "unexpected"
+
     def test_tool_context_registration_rejects_invalid_parameter_layouts(self) -> None:
         """Context declarations must use supported parameter kinds and ordering."""
 
