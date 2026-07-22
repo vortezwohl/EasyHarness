@@ -1,7 +1,8 @@
-"""EasyHarness SDK 的最小回归验证。
+"""Minimal regression coverage for the EasyHarness SDK.
 
-这些测试优先覆盖公开表面、严格工具合同、多轮会话、事件流和压缩事件，
-避免普通调用路径回退到内部 registry、bridge 或私有合同对象。
+These tests prioritize the public surface, strict tool contracts, multi-turn
+sessions, event streams, and compression events without falling back to internal
+registries, bridges, or private contract objects.
 """
 
 from __future__ import annotations
@@ -40,41 +41,41 @@ from easyharness._internal.runtime import _EventMapper
 
 
 class _RequestContext(ToolContext):
-    """用于验证隐藏参数的模块级 Context 子类。"""
+    """Module-level Context subclass used to verify hidden parameters."""
 
     def __init__(self, request_id: str) -> None:
-        """创建带有不应对外泄露标识的测试 Context。"""
+        """Create a test Context with an identifier that must not leak by default."""
 
         self.request_id = request_id
 
 
 class _AlternateRequestContext(ToolContext):
-    """用于验证同名合同冲突的另一个 Context 类型。"""
+    """Alternate Context type used to verify same-name contract conflicts."""
 
 
 def _text_chunk(text: str) -> dict:
-    """构造最小文本流事件序列。"""
+    """Build a minimal text streaming event."""
 
     return {"contentBlockDelta": {"delta": {"text": text}}}
 
 
 class _AgentWithMessages(Protocol):
-    """声明测试中需要的最小 agent 消息接口。"""
+    """Declare the minimal agent message interface required by tests."""
 
     messages: Messages
 
 
 class FakeModel(Model):
-    """用于 SDK 测试的最小假模型。"""
+    """Minimal fake model used by SDK tests."""
 
     def __init__(
         self, *, overflow_threshold: int | None = None, fail_summary: bool = False
     ) -> None:
-        """初始化测试模型。
+        """Initialize the test model.
 
         Args:
-            overflow_threshold: 超过该消息条数时触发上下文溢出。
-            fail_summary: 是否让摘要调用直接失败。
+            overflow_threshold: Number of messages that triggers a context overflow.
+            fail_summary: Whether summary requests should fail immediately.
         """
 
         self._config = {"context_window_limit": 128}
@@ -82,18 +83,18 @@ class FakeModel(Model):
         self._fail_summary = fail_summary
 
     def update_config(self, **model_config: object) -> None:
-        """更新测试配置。"""
+        """Update test configuration."""
 
         self._config.update(model_config)
 
     def get_config(self) -> dict[str, object]:
-        """返回测试配置。"""
+        """Return test configuration."""
 
         return self._config
 
     @property
     def context_window_limit(self) -> int:
-        """返回测试模型的上下文窗口上限。"""
+        """Return the test model context window limit."""
 
         return int(self._config["context_window_limit"])
 
@@ -104,7 +105,7 @@ class FakeModel(Model):
         system_prompt: str | None = None,
         **kwargs: object,
     ) -> AsyncGenerator[dict[str, object], None]:
-        """测试模型不提供结构化输出。"""
+        """The test model does not provide structured output."""
 
         del output_model, prompt, system_prompt, kwargs
         raise NotImplementedError
@@ -116,14 +117,14 @@ class FakeModel(Model):
         system_prompt: str | None = None,
         system_prompt_content: list[SystemContentBlock] | None = None,
     ) -> int:
-        """用消息数估算 token 数。"""
+        """Estimate token usage from the message count."""
 
         del tool_specs, system_prompt, system_prompt_content
         return len(messages) * 10
 
     @staticmethod
     def _latest_user_text(messages: Messages) -> str:
-        """提取最后一条用户文本。"""
+        """Extract the latest user text."""
 
         for message in reversed(messages):
             if message["role"] != "user":
@@ -135,7 +136,7 @@ class FakeModel(Model):
 
     @staticmethod
     def _has_tool_result(messages: Messages) -> bool:
-        """判断当前消息里是否已经包含工具结果。"""
+        """Return whether the current messages already contain a tool result."""
 
         return any(
             any("toolResult" in block for block in message["content"])
@@ -144,7 +145,7 @@ class FakeModel(Model):
 
     @staticmethod
     def _has_summary_message(messages: Messages) -> bool:
-        """判断消息历史里是否已经存在摘要消息。"""
+        """Return whether the message history already contains a summary message."""
 
         return any(
             any(
@@ -157,7 +158,7 @@ class FakeModel(Model):
 
     @staticmethod
     async def _emit_text_response(text: str) -> AsyncGenerator[StreamEvent, None]:
-        """发出一条普通 assistant 文本响应。"""
+        """Emit one ordinary assistant text response."""
 
         yield {"messageStart": {"role": "assistant"}}
         yield {"contentBlockStart": {"start": {}}}
@@ -181,7 +182,7 @@ class FakeModel(Model):
         delay_before_first: float = 0.0,
         delay_between: float = 0.0,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """按给定节奏发出 assistant 文本响应，便于测试取消路径。"""
+        """Emit assistant text chunks at a controlled pace for cancellation tests."""
 
         yield {"messageStart": {"role": "assistant"}}
         yield {"contentBlockStart": {"start": {}}}
@@ -206,7 +207,7 @@ class FakeModel(Model):
 
     @staticmethod
     async def _emit_tool_request() -> AsyncGenerator[StreamEvent, None]:
-        """发出一条带 reasoning 和 toolUse 的响应。"""
+        """Emit a response containing reasoning content and a tool use request."""
 
         yield {"messageStart": {"role": "assistant"}}
         yield {"contentBlockStart": {"start": {}}}
@@ -255,7 +256,7 @@ class FakeModel(Model):
         invocation_state: dict[str, object] | None = None,
         **kwargs: object,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """根据输入消息流式返回最小事件序列。"""
+        """Return a minimal streaming event sequence based on input messages."""
 
         del tool_specs, tool_choice, system_prompt_content, invocation_state, kwargs
 
@@ -312,21 +313,21 @@ class FakeModel(Model):
 
 
 class CustomConversationManager(ConversationManager):
-    """用于验证自定义 manager 透传的最小实现。"""
+    """Minimal implementation used to verify custom manager forwarding."""
 
     def __init__(self) -> None:
-        """初始化自定义 manager。"""
+        """Initialize the custom manager."""
 
         super().__init__()
         self._event_sink: InternalEventSink | None = None
 
     def bind_event_sink(self, sink: InternalEventSink | None) -> None:
-        """绑定内部事件 sink。"""
+        """Bind an internal event sink."""
 
         self._event_sink = sink
 
     def apply_management(self, agent: object, **kwargs: object) -> None:
-        """该测试 manager 不做额外管理。"""
+        """This test manager does not apply additional management."""
 
         del agent, kwargs
 
@@ -336,7 +337,7 @@ class CustomConversationManager(ConversationManager):
         e: Exception | None = None,
         **kwargs: object,
     ) -> None:
-        """用自定义方式压缩上下文，并发出 compress 事件。"""
+        """Compress context with custom behavior and emit a compression event."""
 
         del e, kwargs
         started_at = utc_now_iso()
@@ -366,10 +367,10 @@ class CustomConversationManager(ConversationManager):
 
 
 class EasyHarnessSdkTests(unittest.TestCase):
-    """SDK 回归测试集合。"""
+    """SDK regression test suite."""
 
     def test_public_surface_exports_only_five_names(self) -> None:
-        """顶层公开表面应只暴露五个主要名字。"""
+        """The root public surface must export exactly the expected names."""
 
         self.assertEqual(
             set(easyharness.__all__),
@@ -379,7 +380,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             self.assertTrue(hasattr(easyharness, name))
 
     def test_tool_context_is_hidden_from_schema_and_metadata(self) -> None:
-        """ToolContext 参数应仅作为私有签名规格保留。"""
+        """ToolContext parameters must remain private signature specifications."""
 
         @tool(
             name="contextual_greeting",
@@ -405,7 +406,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         )
 
     def test_tool_context_metadata_remains_strict(self) -> None:
-        """Context 参数不得以普通模型参数身份进入 metadata。"""
+        """Context parameters must not enter metadata as ordinary model parameters."""
 
         with self.assertRaisesRegex(ValueError, "Unexpected parameter docs: request"):
 
@@ -423,7 +424,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
     def test_agent_injects_context_per_run_and_stream_without_event_leakage(
         self,
     ) -> None:
-        """run 与 stream 应按回合注入 Context，且事件不应泄露。"""
+        """run and stream must inject Context per invocation without event leakage."""
 
         observed_request_ids: list[str] = []
 
@@ -474,7 +475,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
     def test_agent_context_validation_uses_safe_failures_and_rejects_unknown_names(
         self,
     ) -> None:
-        """错误 Context 不应执行工具或泄露值，未知名称应提前拒绝。"""
+        """Invalid Context values must not execute tools or leak values; unknown names fail early."""
 
         call_count = 0
 
@@ -523,7 +524,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             self.assertNotIn("secret-value", failure_text)
 
     def test_context_only_nullable_tool_uses_python_default(self) -> None:
-        """可空 Context-only 工具缺失值时应保留 Python 默认值。"""
+        """A nullable Context-only tool must retain its Python default when omitted."""
 
         @tool(
             name="optional_context_only",
@@ -563,7 +564,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
     def test_concurrent_private_context_maps_do_not_leak_between_tool_invocations(
         self,
     ) -> None:
-        """并发工具调用应各自使用私有 Context 映射。"""
+        """Concurrent tool calls must use separate private Context mappings."""
 
         observed_request_ids: list[str] = []
 
@@ -601,7 +602,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(set(observed_request_ids), {"first:ctx-1", "second:ctx-2"})
 
     def test_agent_rejects_conflicting_context_parameter_contracts(self) -> None:
-        """已注册工具同名 Context 类型冲突时应在构造期失败。"""
+        """Conflicting Context types with the same registered parameter name must fail at construction."""
 
         @tool(
             name="first_context_tool",
@@ -642,7 +643,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 )
 
     def test_model_config_defaults_and_base_url_override(self) -> None:
-        """ModelConfig 默认值与显式 base_url 覆盖应生效。"""
+        """ModelConfig defaults and explicit base_url overrides must work."""
 
         default_model = build_runtime_model(
             ModelConfig(model="openai/gpt-4.1-mini", api_key="k"),
@@ -667,7 +668,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(default_model.get_config()["params"]["top_p"], 0.01)
 
     def test_deepseek_runtime_model_preserves_reasoning_for_tool_calls(self) -> None:
-        """DeepSeek tool-call 历史应保留后续请求所需的 reasoning 内容。"""
+        """DeepSeek tool-call history must retain reasoning required by subsequent requests."""
 
         deepseek_model = build_runtime_model(
             ModelConfig(
@@ -729,7 +730,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(deepseek_messages[1]["role"], "tool")
 
     def test_tool_contract_validation_and_tooloutput_events(self) -> None:
-        """工具合同应严格校验，并保留 ToolOutput 的 preview/detail 语义。"""
+        """Tool contracts must validate strictly and preserve ToolOutput preview and detail semantics."""
 
         with self.assertRaisesRegex(ValueError, "Missing parameter docs"):
 
@@ -809,7 +810,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(tool_event.data["output"]["detail"], "detail:pong")
 
     def test_agent_session_reuse_and_reset(self) -> None:
-        """Agent 应复用会话，并在 reset 后开启新会话。"""
+        """An Agent must reuse its session and start a new one after reset."""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -829,7 +830,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(third, "turn:1 third")
 
     def test_agent_cancel_is_noop_while_idle(self) -> None:
-        """空闲态 cancel 不应污染后续 invocation。"""
+        """Calling cancel while idle must not affect a later invocation."""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -845,7 +846,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(result, "turn:1 after-idle-cancel")
 
     def test_stream_cancel_emits_cancelled_phase_and_system_events(self) -> None:
-        """取消流式输出时应暴露 assistant.cancelled 和 system.cancelled。"""
+        """Cancelling a stream must expose assistant.cancelled and system.cancelled events."""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -880,7 +881,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertIn("after-stream-cancel", resumed)
 
     def test_stream_cancel_before_first_delta_still_emits_system_cancelled(self) -> None:
-        """首个公开 delta 之前取消时也应有最终 system.cancelled。"""
+        """Cancelling before the first public delta must still emit a final system.cancelled event."""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -908,7 +909,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         )
 
     def test_run_cancel_returns_cancelled_text_and_agent_stays_usable(self) -> None:
-        """取消同步 run 时应返回取消文本，随后 Agent 仍可继续使用。"""
+        """Cancelling a synchronous run must return cancelled text and leave the Agent reusable."""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -937,7 +938,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
     def test_event_mapper_marks_tool_phase_cancelled_when_result_is_cancelled(
         self,
     ) -> None:
-        """mapper 应能把取消结果归一化为 tool.cancelled 与 system.cancelled。"""
+        """The mapper must normalize a cancelled result into tool.cancelled and system.cancelled."""
 
         output_queue: queue.Queue[object] = queue.Queue()
         mapper = _EventMapper(output_queue)
@@ -980,7 +981,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         )
 
     def test_event_mapper_keeps_same_name_tool_events_correlated(self) -> None:
-        """同名工具重叠时，终态事件应保持原始 tool_use_id 关联。"""
+        """Overlapping same-name tools must retain their original tool_use_id in terminal events."""
 
         output_queue: queue.Queue[object] = queue.Queue()
         mapper = _EventMapper(output_queue)
@@ -1038,7 +1039,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         )
 
     def test_event_mapper_keeps_different_tool_events_correlated(self) -> None:
-        """异名工具重叠时，终态事件不得串用其他工具身份字段。"""
+        """Overlapping different-name tools must not mix identity fields in terminal events."""
 
         output_queue: queue.Queue[object] = queue.Queue()
         mapper = _EventMapper(output_queue)
@@ -1092,7 +1093,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         )
 
     def test_event_mapper_cancels_each_active_tool_phase(self) -> None:
-        """取消时，所有活动工具阶段都应收到各自的 cancelled 终态。"""
+        """Cancellation must complete every active tool phase with its own cancelled terminal event."""
 
         output_queue: queue.Queue[object] = queue.Queue()
         mapper = _EventMapper(output_queue)
@@ -1138,7 +1139,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual((observed[-1].kind, observed[-1].status), ("system", "cancelled"))
 
     def test_default_eventing_manager_owns_compression_defaults(self) -> None:
-        """默认事件化摘要 manager 应声明 SDK 自己的压缩默认值。"""
+        """The default eventing summary manager must define SDK-owned compression defaults."""
 
         manager = EventingSummarizingConversationManager()
 
@@ -1147,7 +1148,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(manager._compression_threshold, 0.7)
 
     def test_default_compress_events_use_proactive_mode(self) -> None:
-        """默认摘要 manager 应在 proactive 压缩时发出 compress 事件。"""
+        """The default summary manager must emit a compression event for proactive compression."""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -1182,7 +1183,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
     def test_reactive_compress_failure_still_raises_when_proactive_disabled(
         self,
     ) -> None:
-        """关闭 proactive 后，reactive 摘要失败仍应继续抛错。"""
+        """With proactive compression disabled, reactive summary failure must still raise."""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -1215,7 +1216,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         )
 
     def test_custom_conversation_manager_override(self) -> None:
-        """传入自定义 manager 时应复用自定义压缩行为。"""
+        """A supplied custom manager must retain its custom compression behavior."""
 
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
@@ -1235,7 +1236,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertIn("custom", compress_modes)
 
     def test_eventing_manager_allows_explicit_override_values(self) -> None:
-        """调用方应能覆盖默认 proactive 与 retention 配置。"""
+        """Callers must be able to override default proactive and retention settings."""
 
         manager = EventingSummarizingConversationManager(
             summary_ratio=0.5,
@@ -1248,7 +1249,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertIsNone(manager._compression_threshold)
 
     def test_toolset_builder_keeps_root_public_surface_minimal(self) -> None:
-        """导入 toolset builder 不应扩张根包公开 SDK 名字集。"""
+        """Importing the toolset builder must not expand the root SDK public surface."""
 
         from easyharness.toolset import build_fileglide_tools
 
@@ -1259,7 +1260,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         )
 
     def test_fileglide_toolset_contains_expected_tools_and_respects_root(self) -> None:
-        """官方 fileglide 工具集应包含约定名称，并遵循 root 作用域。"""
+        """Official FileGlide tools must include the expected names and honor root scope."""
 
         from easyharness.toolset import build_fileglide_tools
 
@@ -1316,7 +1317,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             self.assertEqual(escaped_output.data["error"]["code"], "scope_violation")
 
     def test_fileglide_toolset_allows_explicit_root_override(self) -> None:
-        """官方 fileglide 工具应支持调用期显式 root 覆盖。"""
+        """Official FileGlide tools must allow an explicit call-time root override."""
 
         from easyharness.toolset import build_fileglide_tools
 
@@ -1356,7 +1357,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             )
 
     def test_fileglide_toolset_normalizes_preview_payloads_as_json(self) -> None:
-        """fileglide dataclass 结果应被归一化为 JSON 可序列化结构。"""
+        """FileGlide dataclass results must normalize to JSON-serializable structures."""
 
         from easyharness.toolset import build_fileglide_tools
 
@@ -1378,7 +1379,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             json.dumps(preview_output.data, ensure_ascii=False)
 
     def test_agent_loads_default_file_tools_and_allows_override(self) -> None:
-        """Agent 应默认装载官方文件工具，允许禁用和同名覆盖。"""
+        """An Agent must load official file tools by default and allow disabling or overriding them."""
 
         @tool(
             name="fileglide_read_text",

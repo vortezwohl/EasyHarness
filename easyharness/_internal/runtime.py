@@ -484,7 +484,7 @@ class _StrandsRuntime:
         self.reset()
 
     def _build_tool_context_contracts(self) -> dict[str, tuple[type[object], bool]]:
-        """构建已注册工具的隐藏 Context 名称合同。"""
+        """Build the hidden Context contract names declared by registered tools."""
 
         contracts: dict[str, tuple[type[object], bool]] = {}
         for tool_obj in self._tools:
@@ -503,7 +503,7 @@ class _StrandsRuntime:
         self,
         tool_contexts: Mapping[str, object],
     ) -> dict[str, object]:
-        """为当前回合创建不共享的私有 Context 映射。"""
+        """Create a private Context mapping that is not shared across invocations."""
 
         unknown_names = sorted(set(tool_contexts) - set(self._tool_context_contracts))
         if unknown_names:

@@ -15,11 +15,12 @@ EventStatus = Literal["started", "delta", "completed", "failed", "cancelled"]
 
 
 class ToolContext:
-    """标记仅由宿主按回合注入的工具依赖类型。
+    """Mark a tool dependency type injected by the host for a single invocation.
 
-    工具函数中标注为此类或其子类的参数不属于模型输入，因此不会出现在
-    工具 schema、metadata 描述、模型消息或默认事件输入中。SDK 只识别
-    类型标记，不负责构造、序列化、缓存或持有具体 Context 实例。
+    Tool parameters annotated with this class or its subclasses are not model inputs,
+    so they never appear in tool schemas, metadata descriptions, model messages, or
+    default event input. The SDK only recognizes the type marker; it does not create,
+    serialize, cache, or retain concrete Context instances.
     """
     ...
 

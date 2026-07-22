@@ -165,7 +165,10 @@ class _ToolMetadata:
 
 @dataclass(frozen=True, slots=True)
 class _ToolContextParameter:
-    """描述函数签名中一个按回合解析的隐藏 Context 参数。"""
+    """Describe a hidden Context parameter resolved per invocation.
+
+    The specification is derived from the function signature.
+    """
 
     name: str
     context_type: type[ToolContext]
@@ -176,7 +179,7 @@ class _ToolContextParameter:
 def _tool_context_annotation(
     annotation: object,
 ) -> tuple[type[ToolContext], bool] | None:
-    """识别允许从模型输入中隐藏的 ToolContext 注解。"""
+    """Recognize ToolContext annotations that may be hidden from model input."""
 
     if isinstance(annotation, type) and issubclass(annotation, ToolContext):
         return annotation, False
@@ -194,7 +197,7 @@ def _tool_context_annotation(
 
 
 class _ToolContextInjectionError(ValueError):
-    """表示不会泄露 Context 值的安全注入失败。"""
+    """Represent a safe injection failure that does not expose a Context value."""
 
 
 class _EasyHarnessTool(AgentTool):
@@ -242,12 +245,15 @@ class _EasyHarnessTool(AgentTool):
 
     @property
     def context_parameters(self) -> tuple[_ToolContextParameter, ...]:
-        """返回按函数签名顺序保存的隐藏 Context 参数规格。"""
+        """Return hidden Context parameter specifications in signature order."""
 
         return self._context_parameters
 
     def _build_context_parameters(self) -> tuple[_ToolContextParameter, ...]:
-        """从函数签名中提取不属于模型输入的 Context 参数。"""
+        """Extract non-model Context parameters from a function signature.
+
+        The returned specifications retain their declaration order.
+        """
 
         parameters: list[_ToolContextParameter] = []
         for parameter in self._signature.parameters.values():
@@ -270,7 +276,10 @@ class _EasyHarnessTool(AgentTool):
         self,
         invocation_state: dict[str, object],
     ) -> dict[str, object]:
-        """在实际调用前按名称解析并校验私有 Context。"""
+        """Resolve and validate private Context values before invocation.
+
+        Values are matched by the hidden parameter name.
+        """
 
         raw_contexts = invocation_state.get("_easyharness_tool_contexts", {})
         if not isinstance(raw_contexts, Mapping):
