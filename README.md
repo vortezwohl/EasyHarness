@@ -1,185 +1,190 @@
 <div align="center">
-  <h1>EasyHarness</h1>
-  <p>
-    <strong>
-      A minimal Python SDK for agent loops, with streaming events, clean tool contracts, and zero ceremony.
-    </strong>
-  </p>
-  <p>
-    <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&amp;logoColor=white" alt="Python 3.10+" />
-    <a href="https://github.com/vortezwohl/fileglide">
-      <img src="https://img.shields.io/badge/fileglide-2563EB?logo=github&amp;logoColor=white" alt="FileGlide" />
-    </a>
-    <a href="https://github.com/strands-agents/harness-sdk">
-      <img src="https://img.shields.io/badge/strands%20agents-0F766E?logo=github&amp;logoColor=white" alt="Strands Agents" />
-    </a>
-    <a href="https://github.com/BerriAI/litellm">
-      <img src="https://img.shields.io/badge/litellm-7C3AED?logo=github&amp;logoColor=white" alt="LiteLLM" />
-    </a>
-  </p>
-  <p>
-    <sub>Small public surface. Strong defaults. Explicit control.</sub>
-  </p>
+
+<h1>
+  <img src="assets/easyharness-wordmark.svg" alt="EasyHarness" width="520" />
+</h1>
+
+**Fast agents. Full control.**
+
+*A compact Python SDK for strict tool contracts, observable streaming events, and scoped local file capabilities.*
+
+[![PyPI](https://img.shields.io/pypi/v/easyharness?style=flat-square&color=00CFFF&label=PyPI)](https://pypi.org/project/easyharness/)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-2563EB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
+[![License](https://img.shields.io/badge/License-MIT-B6FF00?style=flat-square&labelColor=07121F)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/vortezwohl/EasyHarness?style=flat-square&label=Stars)](https://github.com/vortezwohl/EasyHarness/stargazers)
+
+<a href="https://github.com/vortezwohl/fileglide">
+  <img src="https://img.shields.io/badge/FileGlide-2563EB?style=flat-square&logo=github&logoColor=white" alt="FileGlide" />
+</a>
+<a href="https://github.com/strands-agents/harness-sdk">
+  <img src="https://img.shields.io/badge/Strands%20Agents-0F766E?style=flat-square&logo=github&logoColor=white" alt="Strands Agents" />
+</a>
+<a href="https://github.com/BerriAI/litellm">
+  <img src="https://img.shields.io/badge/LiteLLM-7C3AED?style=flat-square&logo=github&logoColor=white" alt="LiteLLM" />
+</a>
+
+**One `Agent`. Strict tools. Every phase visible.**
+
+[Why](#why-easyharness) &middot; [Quick start](#quick-start) &middot; [Capabilities](#core-capabilities) &middot; [Usage](#common-patterns) &middot; [API](#public-api) &middot; [Boundaries](#design-boundaries)
+
 </div>
+
+---
 
 ## Why EasyHarness
 
-EasyHarness is designed for local agent workflows where a tiny SDK surface
-matters more than a large framework.
+Most agent applications become difficult when tool behavior is vague, the UI cannot see real runtime phases, filesystem scope is unclear, and context failure arrives after the fact.
 
-It works well for coding agents, but it is not limited to them. Any agent that
-benefits from strict tool contracts, streaming events, and explicit runtime
-control can use the same SDK surface.
+EasyHarness keeps those concerns in a small Python SDK. It is built for coding agents, but fits any single-agent workflow that needs reliable tool calls and observable execution.
 
-It gives you:
+| Where agents drift | What EasyHarness makes explicit |
+| --- | --- |
+| A tool is only a function, so the model does not know when to use it or how it fails. | `@tool` requires purpose, invocation guidance, parameter descriptions, return semantics, and common failures. |
+| A product can only guess what an agent is doing. | `stream()` emits unified thinking, tool, assistant, compression, and system events. |
+| Filesystem access is enabled without a legible boundary. | The official FileGlide toolset supports a default root and an explicit root per call. |
+| Long sessions fail only after the model context overflows. | The default manager proactively compresses at 70% of the context window and reports the result as an event. |
 
-- A single primary runtime entry point through `Agent`
-- Strict tool metadata and output contracts through `tool` and `ToolOutput`
-- A unified streaming event model for thinking, tool, assistant, compression,
-  and system events
-- An official FileGlide-backed filesystem toolset that can be auto-loaded by
-  default or scoped explicitly
+## Quick Start
 
-## Public Surface
-
-The root package intentionally exposes only five public names:
-
-- `Agent`
-- `ModelConfig`
-- `AgentEvent`
-- `ToolOutput`
-- `tool`
-
-Everything else stays behind internal modules or the explicit
-`easyharness.toolset` package.
-
-## Installation
-
-EasyHarness supports both `pip` and `uv`.
-
-### Install with pip
+Run this from the project directory you want the agent to inspect. When no tools are supplied, `Agent` loads the official FileGlide toolset scoped to the current working directory.
 
 ```bash
 pip install -U easyharness
 ```
 
-### Install with uv
-
-```bash
-uv add -U easyharness
-```
-
-### Verify the installation
-
-After installation, import the public package surface in Python:
-
 ```python
-from easyharness import Agent, ModelConfig, AgentEvent, ToolOutput, tool
+import os
+
+from easyharness import Agent, ModelConfig
+
+
+agent = Agent(
+    model=ModelConfig(
+        model="gpt-5.4",
+        api_key=os.environ["OPENAI_API_KEY"],
+    ),
+    system_prompt="You are a careful code reviewer. Read files before answering.",
+)
+
+print(agent.run("Read README.md and pyproject.toml. List three core capabilities."))
 ```
 
-If the import succeeds, the SDK is ready to use.
+This is the complete first loop: create a session-oriented agent, load filesystem tools, inspect the local project, and return text. The caller supplies the API key explicitly; EasyHarness does not read or orchestrate environment variables.
 
-## Typical Usage
+> [!TIP]
+> With `uv`, run `uv add -U easyharness`. Configure the model ID, `base_url`, and context window through `ModelConfig`.
 
-### 1. Define a tool and run an agent
+## Core Capabilities
+
+| Capability | What you get |
+| --- | --- |
+| One runtime entry point | Use `Agent.run()` for final text or `Agent.stream()` for a live experience. |
+| Strict tool contracts | Tool metadata, function signatures, and parameter documentation must agree. `ToolOutput` can serve both the model and a UI. |
+| Host context injection | Pass runtime-only data with `ToolContext[T]` or `OptionalToolContext[T]`; it stays out of the model schema and receives deep type validation. |
+| Observable events | One event vocabulary: `thinking`, `tool`, `assistant`, `compress`, and `system`. |
+| Explicit session control | `cancel()` cooperatively stops the active call, `reset()` clears session history, and re-entry raises `AgentBusyError`. |
+| Scoped file operations | Seven FileGlide tools cover listing, search, reading, editing, path management, and inspection. |
+| Proactive compression | The default manager compresses at 70% of the context window, keeps eight recent messages, and emits its outcome. |
+| OpenAI-compatible models | Supply a model ID, API key, `base_url`, sampling parameters, and a context-window override. A DeepSeek-compatible path preserves tool-call reasoning. |
+
+## Common Patterns
+
+### Define a strict tool
+
+`@tool` does more than register a Python function. It produces a model-facing contract and rejects incomplete metadata before runtime.
 
 ```python
 from easyharness import Agent, ModelConfig, ToolOutput, tool
 
 
 @tool(
-    name="ping_tool",
-    purpose="Return a fixed response for a minimal tool-flow check.",
-    when_to_use=(
-        "Use this when the model needs a trivial tool call to verify that the "
-        "tool pipeline is available."
-    ),
+    name="get_build_status",
+    purpose="Read the latest build status.",
+    when_to_use="Use when the user asks whether the latest build passed.",
     parameters={},
-    returns="A fixed pong response.",
-    common_failures=["This tool does not fail under normal conditions."],
+    returns="A normalized build-status result.",
+    common_failures=["No build record is available."],
 )
-def ping_tool() -> ToolOutput:
+def get_build_status() -> ToolOutput:
     return ToolOutput(
-        data={"value": "pong"},
-        model_text="pong",
-        preview="pong",
-        detail='{"value": "pong"}',
+        data={"status": "passed"},
+        model_text="The latest build passed.",
+        preview="Build passed",
+        detail='{"status": "passed"}',
     )
 
 
 agent = Agent(
-    model=ModelConfig(
-        model="openai/gpt-4.1-mini",
-        api_key="YOUR_API_KEY",
-    ),
-    system_prompt="You are a precise agent.",
-    tools=[ping_tool],
+    model=ModelConfig(model="gpt-5.4", api_key="YOUR_API_KEY"),
+    system_prompt="You are a release assistant.",
+    tools=[get_build_status],
+    enable_fileglide=False,
 )
 
-print(agent.run("Call the ping tool and confirm that the tool pipeline works."))
+print(agent.run("Did the latest build pass?"))
 ```
 
-### 2. Use the default FileGlide integration
+### Drive a live interface
 
-`Agent` can auto-load the official FileGlide-backed toolset, so the shortest
-agent setup does not need a manual `tools=[...]` list.
+`stream()` is the authoritative interface for a timeline, progress UI, or cancel control. Every event carries `kind`, `status`, timing information, and optional data.
 
 ```python
-from easyharness import Agent, ModelConfig
+for event in agent.stream("Inspect the project and explain the next step."):
+    print(event.kind, event.status, event.name, event.text)
+```
+
+The shared statuses are `started`, `delta`, `completed`, `failed`, and `cancelled`. On cancellation, the active phase ends as `cancelled`, the stream ends with `system/cancelled`, and the same `Agent` remains reusable.
+
+```python
+agent.cancel()  # A no-op while idle; requests cooperative cancellation while running.
+agent.reset()   # Clears the current session history.
+```
+
+### Keep host data out of the model
+
+Some values belong to your application and tool implementation, not to model-visible tool input: tenant identity, permission state, or a request object. Mark those arguments as `ToolContext[T]` or `OptionalToolContext[T]`; EasyHarness hides them from the schema and injects validated values on each `run()` or `stream()` call.
+
+```python
+from dataclasses import dataclass
+
+from easyharness import Agent, ModelConfig, ToolContext, ToolOutput, tool
+
+
+@dataclass(frozen=True)
+class RequestContext:
+    tenant_id: str
+
+
+@tool(
+    name="tenant_summary",
+    purpose="Read a summary for the active tenant.",
+    when_to_use="Use when the user asks about the active tenant.",
+    parameters={},
+    returns="A summary for the active tenant.",
+    common_failures=["The request context was not supplied."],
+)
+def tenant_summary(request: ToolContext[RequestContext]) -> ToolOutput:
+    return ToolOutput(model_text=f"Active tenant: {request.tenant_id}")
 
 
 agent = Agent(
-    model=ModelConfig(
-        model="openai/gpt-4.1-mini",
-        api_key="YOUR_API_KEY",
-    ),
-    system_prompt="You are a careful agent.",
+    model=ModelConfig(model="gpt-5.4", api_key="YOUR_API_KEY"),
+    system_prompt="Call tenant_summary when the user asks about the active tenant.",
+    tools=[tenant_summary],
+    enable_fileglide=False,
 )
 
 print(
     agent.run(
-        "List the workspace, read pyproject.toml, and summarize the SDK shape."
+        "What is my active tenant?",
+        request=RequestContext(tenant_id="acme"),
     )
 )
 ```
 
-<details>
-  <summary><strong>Official default FileGlide tools</strong></summary>
+### Scope filesystem access
 
-  <ul>
-    <li><code>fileglide_list_tree</code></li>
-    <li><code>fileglide_search_paths</code></li>
-    <li><code>fileglide_read_text</code></li>
-    <li><code>fileglide_search_text</code></li>
-    <li><code>fileglide_edit_text</code></li>
-    <li><code>fileglide_manage_paths</code></li>
-    <li><code>fileglide_inspect_path</code></li>
-  </ul>
-</details>
-
-### 3. Disable the default FileGlide tools
-
-If you want a stricter default runtime with no filesystem tool auto-loading,
-disable it explicitly.
-
-```python
-from easyharness import Agent, ModelConfig
-
-
-agent = Agent(
-    model=ModelConfig(
-        model="openai/gpt-4.1-mini",
-        api_key="YOUR_API_KEY",
-    ),
-    system_prompt="You are a careful agent.",
-    enable_fileglide=False,
-)
-```
-
-### 4. Build a scoped official FileGlide toolset
-
-When you need explicit control over the filesystem scope, disable the default
-auto-load and pass a scoped official toolset from `easyharness.toolset`.
+Build a scoped toolset when an agent should operate inside one project. Relative and absolute paths must remain within that root. To use another root for one call, pass an explicit `root`; `..` cannot escape the scope.
 
 ```python
 from easyharness import Agent, ModelConfig
@@ -187,202 +192,70 @@ from easyharness.toolset import build_fileglide_tools
 
 
 agent = Agent(
-    model=ModelConfig(
-        model="openai/gpt-4.1-mini",
-        api_key="YOUR_API_KEY",
-    ),
-    system_prompt="You are a careful agent.",
+    model=ModelConfig(model="gpt-5.4", api_key="YOUR_API_KEY"),
+    system_prompt="You are a careful local code assistant.",
     enable_fileglide=False,
-    tools=build_fileglide_tools(default_root="D:/Projects/PythonProjects/EasyHarness"),
+    tools=build_fileglide_tools(default_root="D:/Projects/my-app"),
 )
 ```
 
-`build_fileglide_tools(default_root=...)` creates the official scoped toolset. Paths
-that escape the configured root are rejected by FileGlide scope protection.
+The official tools are `fileglide_list_tree`, `fileglide_search_paths`, `fileglide_read_text`, `fileglide_search_text`, `fileglide_edit_text`, `fileglide_manage_paths`, and `fileglide_inspect_path`.
 
-Each official `fileglide_*` tool also accepts an optional `root` argument for
-that single call. When provided, it overrides the builder's default root
-without additional SDK-level path-range restrictions.
+### Tune model and context behavior
+
+`ModelConfig` requires only `model` and `api_key`. Add `base_url`, `temperature`, `top_p`, `seed`, or `context_window_limit` as needed. When no context limit is provided, the SDK tries known model metadata before falling back to `200000`.
+
+The default conversation manager uses `summary_ratio=0.3`, `preserve_recent_messages=8`, and a 70% proactive-compression threshold. Pass a custom `conversation_manager` to change that policy; compression start, completion, and failure appear as `compress` events.
+
+## Public API
+
+The root package deliberately exposes only eight names:
 
 ```python
-tools = build_fileglide_tools(default_root="D:/Projects/PythonProjects/EasyHarness")
-tool_map = {tool.tool_name: tool for tool in tools}
-
-result = tool_map["fileglide_read_text"](
-    target="EasyHarness/pyproject.toml",
-    root="D:/Projects/PythonProjects",
+from easyharness import (
+    Agent,
+    AgentBusyError,
+    AgentEvent,
+    ModelConfig,
+    OptionalToolContext,
+    ToolContext,
+    ToolOutput,
+    tool,
 )
 ```
 
-## Model Configuration
-
-`ModelConfig` keeps the public runtime inputs direct and small. Most callers
-only need `model` and `api_key`.
-
-`context_window_limit` is available as an optional override when you already
-know the real model capacity:
+The file-tool builder lives in an explicit subpackage:
 
 ```python
-from easyharness import ModelConfig
-
-
-config = ModelConfig(
-    model="openai/gpt-4.1-mini",
-    api_key="YOUR_API_KEY",
-    context_window_limit=131072,
-)
+from easyharness.toolset import build_fileglide_tools
 ```
-
-When `context_window_limit` is omitted, EasyHarness resolves it in this order:
-
-- explicit caller value
-- known SDK model metadata
-- fallback value `200000`
-
-Provider-prefixed model IDs such as `openai/gpt-4.1-mini` are normalized during
-metadata lookup, so proactive compression does not depend on downstream warning
-fallbacks.
-
-## Conversation Compression
-
-EasyHarness uses an eventing summarizing conversation manager by default.
-That default policy is owned by the SDK rather than inherited implicitly from
-the current Strands version.
-
-The default compression behavior is:
-
-- proactive compression enabled by default
-- proactive compression threshold at `70%` of the model context window
-- `summary_ratio=0.3`
-- `preserve_recent_messages=8`
-
-This means `agent.stream(...)` may emit `compress` events before a model call
-actually overflows its context window.
-
-If you need a different policy, pass a custom `conversation_manager`. If you
-want to keep the built-in eventing manager but change its defaults, create it
-explicitly and pass it to `Agent`:
-
-```python
-from easyharness import Agent, ModelConfig
-from easyharness._internal.conversation import (
-    EventingSummarizingConversationManager,
-)
-
-
-agent = Agent(
-    model=ModelConfig(
-        model="openai/gpt-4.1-mini",
-        api_key="YOUR_API_KEY",
-    ),
-    system_prompt="You are a careful agent.",
-    conversation_manager=EventingSummarizingConversationManager(
-        proactive_compression=None,
-        preserve_recent_messages=12,
-    ),
-)
-```
-
-## Cancellation
-
-EasyHarness exposes explicit cooperative cancellation through `Agent.cancel()`.
-
-Use it when the current invocation is still running and the caller wants to
-stop it without reaching into internal runtime objects:
-
-```python
-import threading
-import time
-
-from easyharness import Agent, ModelConfig
-
-
-agent = Agent(
-    model=ModelConfig(
-        model="openai/gpt-4.1-mini",
-        api_key="YOUR_API_KEY",
-    ),
-    system_prompt="You are a careful agent.",
-)
-
-
-def consume() -> None:
-    for event in agent.stream("Start a long-running task."):
-        print(event.kind, event.status, event.text)
-
-
-worker = threading.Thread(target=consume)
-worker.start()
-time.sleep(1)
-agent.cancel()
-worker.join()
-```
-
-Calling `agent.cancel()` while idle is a no-op. After cancellation, the same
-`Agent` instance remains reusable for the next `run(...)` or `stream(...)`
-call.
-
-## Event Stream
-
-`agent.stream(prompt)` yields a unified `AgentEvent` stream. The public event
-kinds are:
-
-- `thinking`
-- `tool`
-- `assistant`
-- `compress`
-- `system`
-
-Each event uses the same status vocabulary:
-
-- `started`
-- `delta`
-- `completed`
-- `failed`
-- `cancelled`
-
-```python
-for event in agent.stream("Inspect the workspace and explain the next step."):
-    print(event.kind, event.status, event.text)
-```
-
-`compress` events cover both proactive and reactive compression attempts. The
-event `data` payload includes the compression mode so UIs can distinguish
-between "compressed early to stay under the limit" and "compressed during
-overflow recovery".
-
-When an invocation is cancelled, the stream exposes cancellation as a first-
-class public outcome:
-
-- the currently active public phase emits a terminal `cancelled` event when a
-  phase was already in progress
-- the stream always ends with `AgentEvent(kind="system", status="cancelled", data={"stop_reason": "cancelled"})`
-
-`run(prompt)` remains the shortest synchronous path for plain text usage, but
-`stream(prompt)` is the authoritative interface for UIs that need complete
-runtime state, phase transitions, and cancellation semantics.
 
 ## Design Boundaries
 
-EasyHarness is intentionally small. v1 does not try to solve:
+EasyHarness owns the single-agent runtime loop and its tool, session, and event contracts. It intentionally does not provide:
 
-- UI components
-- Environment-variable orchestration layers
-- Plugin platforms
-- Multi-agent orchestration
-- Root-package re-export sprawl for toolset builders
+- UI components;
+- environment-variable orchestration;
+- a plugin platform;
+- multi-agent orchestration; or
+- broad root-package re-exports for every toolset builder.
 
-## Summary
+That boundary keeps the SDK responsible for predictable runtime behavior while leaving product orchestration and experience design to the caller.
 
-EasyHarness is most useful when you want:
+## Development
 
-- A minimal `Agent` API
-- Strict tool definitions
-- Streaming runtime visibility
-- A practical, official FileGlide-backed filesystem toolset
+Sync the development environment, then run the SDK regression suite that does
+not require real model credentials:
 
-If that is your shape of problem, the shortest path is:
+```bash
+uv sync
+uv run python -m unittest tests.test_sdk tests.test_context_window_resolution
+```
 
-1. Create an `Agent`
-2. Define tools with `@tool(...)`
-3. Use the default FileGlide integration or pass a scoped official toolset
+## Contributing
+
+Contributions should improve verifiable runtime behavior, tool contracts, event completeness, filesystem scope, or session control. Keep the public API narrow and add independently runnable tests for new behavior.
+
+## License
+
+[MIT](LICENSE)
