@@ -533,8 +533,9 @@ class _StrandsRuntime:
         with self._state_lock:
             if self._active_invocations == 0:
                 return
+            active_agent = self._agent
 
-        self._agent.cancel()
+        active_agent.cancel()
 
     def _create_agent(self) -> StrandsAgent:
         """Create a new underlying Strands agent."""

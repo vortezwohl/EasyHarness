@@ -46,7 +46,7 @@ from easyharness._internal.conversation import (
     utc_now_iso,
 )
 from easyharness._internal.model import build_runtime_model
-from easyharness._internal.runtime import _EventMapper
+from easyharness._internal.runtime import _EventMapper, _StrandsRuntime
 
 
 class _RequestContext:
@@ -1215,6 +1215,63 @@ class EasyHarnessSdkTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unknown tool Context parameters"):
                 agent.run("invalid-context", unknown=object())
             self.assertIn("after-invalid-context", agent.run("after-invalid-context"))
+
+    def test_cancel_targets_agent_active_when_request_started(self) -> None:
+        """取消请求必须作用于开始时的活动会话，而非随后重置的新会话。"""
+
+        class StubAgent:
+            """记录取消调用的最小底层 Agent 替身。"""
+
+            def __init__(self) -> None:
+                """初始化尚未收到取消信号的替身。"""
+
+                self.cancelled = False
+
+            def cancel(self) -> None:
+                """记录一次取消请求。"""
+
+                self.cancelled = True
+
+        class InterleavingLock:
+            """在 cancel 释放锁时模拟旧调用结束及随后完成的会话重置。"""
+
+            def __init__(self, runtime: _StrandsRuntime, next_agent: StubAgent) -> None:
+                """保存需要在临界区结束后切换的运行时和新会话。"""
+
+                self.runtime = runtime
+                self.next_agent = next_agent
+                self.interleaved = False
+
+            def __enter__(self) -> InterleavingLock:
+                """提供 Lock 所需的上下文管理器入口。"""
+
+                return self
+
+            def __exit__(
+                self,
+                exception_type: object,
+                exception: object,
+                traceback: object,
+            ) -> None:
+                """在首次释放时切换到已重置的新会话。"""
+
+                del exception_type, exception, traceback
+                if not self.interleaved:
+                    self.interleaved = True
+                    self.runtime._active_invocations = 0
+                    self.runtime._agent = self.next_agent
+
+        runtime = object.__new__(_StrandsRuntime)
+        runtime._active_invocations = 1
+        old_agent = StubAgent()
+        new_agent = StubAgent()
+        runtime._agent = old_agent
+        runtime._state_lock = InterleavingLock(runtime, new_agent)
+
+        runtime.cancel()
+
+        self.assertTrue(old_agent.cancelled)
+        self.assertFalse(new_agent.cancelled)
 
     def test_stream_cancel_emits_cancelled_phase_and_system_events(self) -> None:
         """Stream cancellation must emit assistant and system cancellation events."""
