@@ -8,21 +8,76 @@ share these types to keep the public semantics stable.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Annotated, Literal
 
 EventKind = Literal["thinking", "tool", "assistant", "compress", "system"]
 EventStatus = Literal["started", "delta", "completed", "failed", "cancelled"]
 
 
-class ToolContext:
-    """Mark a tool dependency type injected by the host for a single invocation.
+@dataclass(frozen=True, slots=True)
+class _ToolContextAnnotation:
+    """Store private metadata for one host-injected tool parameter."""
 
-    Tool parameters annotated with this class or its subclasses are not model inputs,
-    so they never appear in tool schemas, metadata descriptions, model messages, or
-    default event input. The SDK only recognizes the type marker; it does not create,
-    serialize, cache, or retain concrete Context instances.
+    optional: bool
+
+
+class ToolContext:
+    """Declare one required host-injected tool Context parameter.
+
+    Use ``ToolContext[PayloadType]`` in a tool signature. ``PayloadType`` stays a
+    normal application type and must not inherit from this annotation helper.
     """
-    ...
+
+    def __new__(cls, *args: object, **kwargs: object) -> ToolContext:
+        """Reject runtime construction because this type exists only for annotations."""
+
+        del args, kwargs
+        raise TypeError("ToolContext is annotation-only; use ToolContext[PayloadType]")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Reject the removed inheritance-based Context declaration contract."""
+
+        del kwargs
+        raise TypeError(
+            "ToolContext cannot be subclassed; use ToolContext[PayloadType]"
+        )
+
+    def __class_getitem__(cls, payload_type: object) -> object:
+        """Attach required Context metadata to one payload type annotation."""
+
+        return Annotated[payload_type, _ToolContextAnnotation(optional=False)]
+
+
+class OptionalToolContext:
+    """Declare one optional host-injected tool Context parameter.
+
+    Use ``OptionalToolContext[PayloadType]`` when omitted host injection must
+    resolve to ``None`` for runtime and direct decorated-tool calls.
+    """
+
+    def __new__(cls, *args: object, **kwargs: object) -> OptionalToolContext:
+        """Reject runtime construction because this type exists only for annotations."""
+
+        del args, kwargs
+        raise TypeError(
+            "OptionalToolContext is annotation-only; use OptionalToolContext[PayloadType]"
+        )
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Reject subclassing because optional Context is annotation-only syntax."""
+
+        del kwargs
+        raise TypeError(
+            "OptionalToolContext cannot be subclassed; use OptionalToolContext[PayloadType]"
+        )
+
+    def __class_getitem__(cls, payload_type: object) -> object:
+        """Attach optional Context metadata to one nullable payload annotation."""
+
+        return Annotated[
+            payload_type | None,
+            _ToolContextAnnotation(optional=True),
+        ]
 
 
 @dataclass(slots=True, frozen=True)
@@ -43,8 +98,8 @@ class ModelConfig:
     model: str
     api_key: str
     base_url: str = "https://api.openai.com/v1"
-    temperature: float = 0.01
-    top_p: float = 0.01
+    temperature: float = .01
+    top_p: float = .01
     seed: int | None = None
     context_window_limit: int | None = None
 

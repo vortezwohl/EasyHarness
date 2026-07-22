@@ -8,6 +8,7 @@ registries, bridges, or private contract objects.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import queue
 import tempfile
@@ -30,7 +31,14 @@ from strands.types.streaming import StreamEvent
 from strands.types.tools import ToolChoice, ToolSpec
 
 import easyharness
-from easyharness import Agent, ModelConfig, ToolContext, ToolOutput, tool
+from easyharness import (
+    Agent,
+    ModelConfig,
+    OptionalToolContext,
+    ToolContext,
+    ToolOutput,
+    tool,
+)
 from easyharness._internal.conversation import (
     EventingSummarizingConversationManager,
     InternalEventSink,
@@ -40,8 +48,8 @@ from easyharness._internal.model import build_runtime_model
 from easyharness._internal.runtime import _EventMapper
 
 
-class _RequestContext(ToolContext):
-    """Module-level Context subclass used to verify hidden parameters."""
+class _RequestContext:
+    """Module-level Context payload used to verify hidden parameters."""
 
     def __init__(self, request_id: str) -> None:
         """Create a test Context with an identifier that must not leak by default."""
@@ -49,8 +57,8 @@ class _RequestContext(ToolContext):
         self.request_id = request_id
 
 
-class _AlternateRequestContext(ToolContext):
-    """Alternate Context type used to verify same-name contract conflicts."""
+class _AlternateRequestContext:
+    """Alternate Context payload used to verify same-name contract conflicts."""
 
 
 def _text_chunk(text: str) -> dict:
@@ -369,12 +377,20 @@ class CustomConversationManager(ConversationManager):
 class EasyHarnessSdkTests(unittest.TestCase):
     """SDK regression test suite."""
 
-    def test_public_surface_exports_only_five_names(self) -> None:
+    def test_public_surface_exports_only_expected_names(self) -> None:
         """The root public surface must export exactly the expected names."""
 
         self.assertEqual(
             set(easyharness.__all__),
-            {"Agent", "ModelConfig", "AgentEvent", "ToolContext", "ToolOutput", "tool"},
+            {
+                "Agent",
+                "ModelConfig",
+                "AgentEvent",
+                "ToolContext",
+                "OptionalToolContext",
+                "ToolOutput",
+                "tool",
+            },
         )
         for name in easyharness.__all__:
             self.assertTrue(hasattr(easyharness, name))
@@ -392,8 +408,8 @@ class EasyHarnessSdkTests(unittest.TestCase):
         )
         def contextual_greeting(
             name: str,
-            request: _RequestContext,
-            optional_request: _RequestContext | None = None,
+            request: ToolContext[_RequestContext],
+            optional_request: OptionalToolContext[_RequestContext],
         ) -> str:
             return f"{name}:{request.__class__.__name__}:{optional_request is None}"
 
@@ -418,7 +434,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 returns="不会返回。",
                 common_failures="注册失败。",
             )
-            def invalid_context_metadata(request: _RequestContext) -> str:
+            def invalid_context_metadata(request: ToolContext[_RequestContext]) -> str:
                 return request.__class__.__name__
 
     def test_agent_injects_context_per_run_and_stream_without_event_leakage(
@@ -436,7 +452,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             returns="包含当前请求标识的输出。",
             common_failures="Context 注入失败。",
         )
-        def echo_tool(text: str, request: _RequestContext) -> ToolOutput:
+        def echo_tool(text: str, request: ToolContext[_RequestContext]) -> ToolOutput:
             observed_request_ids.append(request.request_id)
             return ToolOutput(
                 data={"text": text},
@@ -487,7 +503,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             returns="不应在错误时返回。",
             common_failures="Context 不可用。",
         )
-        def echo_tool(text: str, request: _RequestContext) -> str:
+        def echo_tool(text: str, request: ToolContext[_RequestContext]) -> str:
             nonlocal call_count
             del text, request
             call_count += 1
@@ -523,20 +539,66 @@ class EasyHarnessSdkTests(unittest.TestCase):
             self.assertIn("_RequestContext", failure_text)
             self.assertNotIn("secret-value", failure_text)
 
-    def test_context_only_nullable_tool_uses_python_default(self) -> None:
-        """A nullable Context-only tool must retain its Python default when omitted."""
+    def test_tool_context_registration_rejects_legacy_and_ambiguous_declarations(
+        self,
+    ) -> None:
+        """Context declarations must use one annotation-wrapped payload type."""
+
+        with self.assertRaisesRegex(TypeError, "ToolContext cannot be subclassed"):
+
+            class LegacyContext(ToolContext):
+                pass
+
+        with self.assertRaisesRegex(ValueError, "requires one concrete payload type"):
+
+            @tool(
+                name="invalid_context_payload_union",
+                purpose="Validate Context contract rejection.",
+                when_to_use="Use only in tests.",
+                parameters=dict(),
+                returns="No result is expected.",
+                common_failures="The Context declaration is invalid.",
+            )
+            def invalid_context_payload_union(
+                request: ToolContext[_RequestContext | _AlternateRequestContext],
+            ) -> str:
+                return "unexpected"
+
+        with self.assertRaisesRegex(ValueError, "cannot use unions"):
+
+            @tool(
+                name="invalid_context_outer_union",
+                purpose="Validate Context contract rejection.",
+                when_to_use="Use only in tests.",
+                parameters=dict(),
+                returns="No result is expected.",
+                common_failures="The Context declaration is invalid.",
+            )
+            def invalid_context_outer_union(
+                request: ToolContext[_RequestContext] | _AlternateRequestContext,
+            ) -> str:
+                return "unexpected"
+
+    def test_optional_tool_context_uses_none_when_omitted(self) -> None:
+        """Optional Context must resolve to None in runtime and direct calls."""
 
         @tool(
             name="optional_context_only",
-            purpose="验证可空 Context 默认值。",
-            when_to_use="仅用于测试。",
+            purpose="Validate optional Context defaults.",
+            when_to_use="Use only in tests.",
             parameters=dict(),
-            returns="默认值标记。",
-            common_failures="不应失败。",
+            returns="The observed Context default marker.",
+            common_failures="The tool should not fail.",
         )
-        def optional_context_only(request: _RequestContext | None = None) -> str:
+        def optional_context_only(
+            request: OptionalToolContext[_RequestContext],
+        ) -> str:
             return "default" if request is None else request.request_id
 
+        self.assertEqual(optional_context_only(), "default")
+        self.assertIsNone(
+            inspect.signature(optional_context_only).parameters["request"].default
+        )
         schema = optional_context_only.tool_spec["inputSchema"]["json"]
         self.assertEqual(schema.get("properties"), dict())
 
@@ -576,7 +638,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             returns="当前 Context 标识。",
             common_failures="不应失败。",
         )
-        async def concurrent_context_tool(text: str, request: _RequestContext) -> str:
+        async def concurrent_context_tool(text: str, request: ToolContext[_RequestContext]) -> str:
             await asyncio.sleep(0)
             observed_request_ids.append(f"{text}:{request.request_id}")
             return request.request_id
@@ -612,7 +674,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             returns="不重要。",
             common_failures="不应失败。",
         )
-        def first_context_tool(request: _RequestContext) -> str:
+        def first_context_tool(request: ToolContext[_RequestContext]) -> str:
             return request.request_id
 
         @tool(
@@ -623,7 +685,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             returns="不重要。",
             common_failures="不应失败。",
         )
-        def second_context_tool(request: _AlternateRequestContext) -> str:
+        def second_context_tool(request: ToolContext[_AlternateRequestContext]) -> str:
             del request
             return "second"
 
@@ -1256,7 +1318,15 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertTrue(callable(build_fileglide_tools))
         self.assertEqual(
             set(easyharness.__all__),
-            {"Agent", "ModelConfig", "AgentEvent", "ToolContext", "ToolOutput", "tool"},
+            {
+                "Agent",
+                "ModelConfig",
+                "AgentEvent",
+                "ToolContext",
+                "OptionalToolContext",
+                "ToolOutput",
+                "tool",
+            },
         )
 
     def test_fileglide_toolset_contains_expected_tools_and_respects_root(self) -> None:
