@@ -1,16 +1,14 @@
-"""Minimal public SDK surface for EasyHarness.
+"""EasyHarness 的最小公开 SDK 表面。
 
-The package exposes only five public names: `Agent`, `ModelConfig`,
-`AgentEvent`, `ToolOutput`, and `tool`. Runtime bridging, tool contract
-validation, event mapping, and conversation compression stay inside private
-modules so ordinary callers never have to touch internal objects.
+包级入口仅导出 Agent、ModelConfig、AgentEvent、ToolContext、ToolOutput 和 tool。
+运行时桥接、工具合同校验、事件映射和对话压缩均保留在私有模块中。
 """
 
 from ._internal.runtime import Agent
 from ._internal.tools import tool
-from ._internal.types import AgentEvent, ModelConfig, ToolOutput
+from ._internal.types import AgentEvent, ModelConfig, ToolContext, ToolOutput
 
-__all__ = ["Agent", "ModelConfig", "AgentEvent", "ToolOutput", "tool"]
+__all__ = ["Agent", "ModelConfig", "AgentEvent", "ToolContext", "ToolOutput", "tool"]
 
 __AUTHOR__ = "Zihao Wu / Vortez Wohl"
 __EMAIL__ = "vortez.wohl@gmail.com"

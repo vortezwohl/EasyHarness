@@ -1,0 +1,58 @@
+{
+  "current_task": null,
+  "functional_boundary_decisions": [],
+  "impact_scope_adaptations": [
+    {
+      "task": "T-001",
+      "timestamp": "2026-07-22T14:10:00+08:00",
+      "evidence": "D-001 explicitly requires ToolContext as an additive public export and focused contract coverage; easyharness/__init__.py controls __all__ and tests/test_sdk.py contains the existing public-surface regression test.",
+      "affected_paths": [
+        "easyharness/__init__.py",
+        "tests/test_sdk.py"
+      ],
+      "compatibility_impact": "Additive public type export only; existing Agent, tool, and ordinary input contracts remain unchanged.",
+      "verification": "Focused schema, metadata, and direct-call regression tests were added but cannot run until the declared Strands dependency is installed."
+    },
+    {
+      "task": "T-004",
+      "timestamp": "2026-07-22T14:23:00+08:00",
+      "evidence": "The plan references OpenSpec specification files, but this repository has no openspec directory; README.md is the available user-facing contract documentation seam.",
+      "affected_paths": [
+        "README.md"
+      ],
+      "compatibility_impact": "Documentation-only adaptation; no runtime or public API behavior was expanded.",
+      "verification": "README example was added and git diff --check passed."
+    }
+  ],
+  "plan_digest": "77cc9392ffd3f55abeca181e3331e6bf4c2e8a7d3ee5801ca3f3edf0c654cc35",
+  "tasks": {
+    "T-001": {
+      "recorded_execution_results": [
+        "Implemented ToolContext marker, annotation classification, hidden schema construction, strict metadata alignment, public export, and focused regression coverage.",
+        "Verified by tests.test_sdk, which covers schema hiding, strict metadata rejection, nullable Context-only tools, and direct calls."
+      ],
+      "state": "completed"
+    },
+    "T-002": {
+      "recorded_execution_results": [
+        "Implemented per-run and per-stream private invocation_state transport, early unknown-key rejection, and registered-name conflict detection.",
+        "Verified by tests.test_sdk for run, stream, sequential context values, unknown keys, conflicts, and concurrent private maps."
+      ],
+      "state": "completed"
+    },
+    "T-003": {
+      "recorded_execution_results": [
+        "Implemented invoked-tool-only Context resolution, type and nullable validation, safe failure text, and separate public versus call arguments.",
+        "Verified by tests.test_sdk for missing and wrong-type Context failures, tool non-execution, and public event input visibility."
+      ],
+      "state": "completed"
+    },
+    "T-004": {
+      "recorded_execution_results": [
+        "Documented the public contract in README.md and added contract regression tests.",
+        "Verified by 30 passing tests in tests.test_sdk, compileall, ruff check easyharness, and git diff --check."
+      ],
+      "state": "completed"
+    }
+  }
+}

@@ -14,6 +14,16 @@ EventKind = Literal["thinking", "tool", "assistant", "compress", "system"]
 EventStatus = Literal["started", "delta", "completed", "failed", "cancelled"]
 
 
+class ToolContext:
+    """标记仅由宿主按回合注入的工具依赖类型。
+
+    工具函数中标注为此类或其子类的参数不属于模型输入，因此不会出现在
+    工具 schema、metadata 描述、模型消息或默认事件输入中。SDK 只识别
+    类型标记，不负责构造、序列化、缓存或持有具体 Context 实例。
+    """
+    ...
+
+
 @dataclass(slots=True, frozen=True)
 class ModelConfig:
     """Explicit model settings for a single agent session.

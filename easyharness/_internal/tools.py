@@ -14,13 +14,23 @@ import time
 import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Callable, Mapping, Sequence, cast, get_type_hints
+from types import UnionType
+from typing import (
+    Callable,
+    Mapping,
+    Sequence,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 from strands.types._events import ToolResultEvent
 from strands.types.tools import AgentTool, ToolGenerator, ToolResult, ToolSpec, ToolUse
 
-from easyharness._internal.types import ToolOutput
+from easyharness._internal.types import ToolContext, ToolOutput
 
 RequiredMetadata = Mapping[str, str]
 ToolCallable = Callable[..., object]
@@ -153,6 +163,40 @@ class _ToolMetadata:
     common_failures: list[str]
 
 
+@dataclass(frozen=True, slots=True)
+class _ToolContextParameter:
+    """描述函数签名中一个按回合解析的隐藏 Context 参数。"""
+
+    name: str
+    context_type: type[ToolContext]
+    nullable: bool
+    default: object
+
+
+def _tool_context_annotation(
+    annotation: object,
+) -> tuple[type[ToolContext], bool] | None:
+    """识别允许从模型输入中隐藏的 ToolContext 注解。"""
+
+    if isinstance(annotation, type) and issubclass(annotation, ToolContext):
+        return annotation, False
+    if get_origin(annotation) not in (Union, UnionType):
+        return None
+    arguments = get_args(annotation)
+    if len(arguments) != 2 or type(None) not in arguments:
+        return None
+    context_type = next(
+        argument for argument in arguments if argument is not type(None)
+    )
+    if isinstance(context_type, type) and issubclass(context_type, ToolContext):
+        return context_type, True
+    return None
+
+
+class _ToolContextInjectionError(ValueError):
+    """表示不会泄露 Context 值的安全注入失败。"""
+
+
 class _EasyHarnessTool(AgentTool):
     """Private EasyHarness tool implementation."""
 
@@ -168,6 +212,8 @@ class _EasyHarnessTool(AgentTool):
         self._func = func
         self._metadata = metadata
         self._signature = inspect.signature(func)
+        self._type_hints = get_type_hints(func)
+        self._context_parameters = self._build_context_parameters()
         self._input_model = self._build_input_model()
         self._tool_spec = self._build_tool_spec()
 
@@ -194,6 +240,69 @@ class _EasyHarnessTool(AgentTool):
 
         return "python"
 
+    @property
+    def context_parameters(self) -> tuple[_ToolContextParameter, ...]:
+        """返回按函数签名顺序保存的隐藏 Context 参数规格。"""
+
+        return self._context_parameters
+
+    def _build_context_parameters(self) -> tuple[_ToolContextParameter, ...]:
+        """从函数签名中提取不属于模型输入的 Context 参数。"""
+
+        parameters: list[_ToolContextParameter] = []
+        for parameter in self._signature.parameters.values():
+            annotation = self._type_hints.get(parameter.name, parameter.annotation)
+            context_annotation = _tool_context_annotation(annotation)
+            if context_annotation is None:
+                continue
+            context_type, nullable = context_annotation
+            parameters.append(
+                _ToolContextParameter(
+                    name=parameter.name,
+                    context_type=context_type,
+                    nullable=nullable,
+                    default=parameter.default,
+                )
+            )
+        return tuple(parameters)
+
+    def _resolve_context_arguments(
+        self,
+        invocation_state: dict[str, object],
+    ) -> dict[str, object]:
+        """在实际调用前按名称解析并校验私有 Context。"""
+
+        raw_contexts = invocation_state.get("_easyharness_tool_contexts", {})
+        if not isinstance(raw_contexts, Mapping):
+            raise _ToolContextInjectionError(
+                f"Tool {self.tool_name} received an invalid private context map"
+            )
+        resolved: dict[str, object] = {}
+        for parameter in self._context_parameters:
+            if parameter.name not in raw_contexts:
+                if (
+                    parameter.nullable
+                    and parameter.default is not inspect.Parameter.empty
+                ):
+                    continue
+                raise _ToolContextInjectionError(
+                    f"Tool {self.tool_name} requires Context parameter "
+                    f"{parameter.name} of type "
+                    f"{parameter.context_type.__name__}"
+                )
+            value = raw_contexts[parameter.name]
+            if value is None and parameter.nullable:
+                resolved[parameter.name] = value
+                continue
+            if not isinstance(value, parameter.context_type):
+                raise _ToolContextInjectionError(
+                    f"Tool {self.tool_name} requires Context parameter "
+                    f"{parameter.name} of type "
+                    f"{parameter.context_type.__name__}"
+                )
+            resolved[parameter.name] = value
+        return resolved
+
     def _build_input_model(self) -> type[BaseModel]:
         """Build an input model from the function signature and type hints.
 
@@ -204,9 +313,13 @@ class _EasyHarnessTool(AgentTool):
             ValueError: Raised when metadata and signature do not match.
         """
 
-        hints = get_type_hints(self._func)
         fields: dict[str, tuple[object, object]] = {}
-        actual_parameters = list(self._signature.parameters.values())
+        context_names = {parameter.name for parameter in self._context_parameters}
+        actual_parameters = [
+            parameter
+            for parameter in self._signature.parameters.values()
+            if parameter.name not in context_names
+        ]
         declared_names = set(self._metadata.parameters)
         actual_names = {parameter.name for parameter in actual_parameters}
 
@@ -227,7 +340,7 @@ class _EasyHarnessTool(AgentTool):
             ):
                 raise ValueError("tool does not support *args or **kwargs")
 
-            annotation = hints.get(parameter.name, parameter.annotation)
+            annotation = self._type_hints.get(parameter.name, parameter.annotation)
             if annotation is inspect.Parameter.empty:
                 raise ValueError(
                     f"Parameter {parameter.name} must provide a type annotation"
@@ -345,7 +458,11 @@ class _EasyHarnessTool(AgentTool):
         }
 
         try:
-            raw_output = await self._invoke(**arguments)
+            call_arguments = {
+                **arguments,
+                **self._resolve_context_arguments(invocation_state),
+            }
+            raw_output = await self._invoke(**call_arguments)
             output = _normalize_tool_output(raw_output)
             self._tool_outputs_store(invocation_state)[tool_use_id] = output
             duration_ms = int((time.perf_counter() - start) * 1000)

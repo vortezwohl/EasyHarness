@@ -7,15 +7,15 @@
 from __future__ import annotations
 
 import asyncio
-import unittest
-from collections.abc import AsyncGenerator
 import json
-from pathlib import Path
 import queue
+import tempfile
 import threading
 import time
+import unittest
+from collections.abc import AsyncGenerator
+from pathlib import Path
 from types import SimpleNamespace
-import tempfile
 from typing import Protocol
 from unittest import mock
 
@@ -29,7 +29,7 @@ from strands.types.streaming import StreamEvent
 from strands.types.tools import ToolChoice, ToolSpec
 
 import easyharness
-from easyharness import Agent, ModelConfig, ToolOutput, tool
+from easyharness import Agent, ModelConfig, ToolContext, ToolOutput, tool
 from easyharness._internal.conversation import (
     EventingSummarizingConversationManager,
     InternalEventSink,
@@ -37,6 +37,19 @@ from easyharness._internal.conversation import (
 )
 from easyharness._internal.model import build_runtime_model
 from easyharness._internal.runtime import _EventMapper
+
+
+class _RequestContext(ToolContext):
+    """用于验证隐藏参数的模块级 Context 子类。"""
+
+    def __init__(self, request_id: str) -> None:
+        """创建带有不应对外泄露标识的测试 Context。"""
+
+        self.request_id = request_id
+
+
+class _AlternateRequestContext(ToolContext):
+    """用于验证同名合同冲突的另一个 Context 类型。"""
 
 
 def _text_chunk(text: str) -> dict:
@@ -360,10 +373,273 @@ class EasyHarnessSdkTests(unittest.TestCase):
 
         self.assertEqual(
             set(easyharness.__all__),
-            {"Agent", "ModelConfig", "AgentEvent", "ToolOutput", "tool"},
+            {"Agent", "ModelConfig", "AgentEvent", "ToolContext", "ToolOutput", "tool"},
         )
         for name in easyharness.__all__:
             self.assertTrue(hasattr(easyharness, name))
+
+    def test_tool_context_is_hidden_from_schema_and_metadata(self) -> None:
+        """ToolContext 参数应仅作为私有签名规格保留。"""
+
+        @tool(
+            name="contextual_greeting",
+            purpose="生成带请求标识的问候语。",
+            when_to_use="需要处理当前请求时使用。",
+            parameters={"name": "需要问候的姓名。"},
+            returns="问候语文本。",
+            common_failures="姓名不能为空。",
+        )
+        def contextual_greeting(
+            name: str,
+            request: _RequestContext,
+            optional_request: _RequestContext | None = None,
+        ) -> str:
+            return f"{name}:{request.__class__.__name__}:{optional_request is None}"
+
+        schema = contextual_greeting.tool_spec["inputSchema"]["json"]
+        self.assertEqual(set(schema["properties"]), {"name"})
+        self.assertNotIn("request", contextual_greeting.tool_spec["description"])
+        self.assertEqual(
+            contextual_greeting("Ada", _RequestContext("direct")),
+            "Ada:_RequestContext:True",
+        )
+
+    def test_tool_context_metadata_remains_strict(self) -> None:
+        """Context 参数不得以普通模型参数身份进入 metadata。"""
+
+        with self.assertRaisesRegex(ValueError, "Unexpected parameter docs: request"):
+
+            @tool(
+                name="invalid_context_metadata",
+                purpose="验证隐藏参数不能出现在 metadata。",
+                when_to_use="仅用于测试。",
+                parameters={"request": "不应接受的 Context 描述。"},
+                returns="不会返回。",
+                common_failures="注册失败。",
+            )
+            def invalid_context_metadata(request: _RequestContext) -> str:
+                return request.__class__.__name__
+
+    def test_agent_injects_context_per_run_and_stream_without_event_leakage(
+        self,
+    ) -> None:
+        """run 与 stream 应按回合注入 Context，且事件不应泄露。"""
+
+        observed_request_ids: list[str] = []
+
+        @tool(
+            name="echo_tool",
+            purpose="返回带有当前请求标识的结果。",
+            when_to_use="模型需要验证 Context 注入时使用。",
+            parameters={"text": "要回显的文本。"},
+            returns="包含当前请求标识的输出。",
+            common_failures="Context 注入失败。",
+        )
+        def echo_tool(text: str, request: _RequestContext) -> ToolOutput:
+            observed_request_ids.append(request.request_id)
+            return ToolOutput(
+                data={"text": text},
+                model_text=text,
+                preview=f"{text}:{request.request_id}",
+            )
+
+        with mock.patch(
+            "easyharness._internal.runtime.build_runtime_model",
+            return_value=FakeModel(),
+        ):
+            agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+                tools=[echo_tool],
+                enable_fileglide=False,
+            )
+            run_result = agent.run("use_tool", request=_RequestContext("run-1"))
+            agent.reset()
+            events = list(agent.stream("use_tool", request=_RequestContext("stream-2")))
+
+        self.assertEqual(run_result, "tool-result:done")
+        self.assertEqual(observed_request_ids, ["run-1", "stream-2"])
+        completed_event = next(
+            event
+            for event in events
+            if event.kind == "tool" and event.status == "completed"
+        )
+        self.assertEqual(completed_event.data["input"], {"text": "pong"})
+        self.assertNotIn("request", completed_event.data["input"])
+        self.assertEqual(
+            completed_event.data["output"]["preview"],
+            "pong:stream-2",
+        )
+
+    def test_agent_context_validation_uses_safe_failures_and_rejects_unknown_names(
+        self,
+    ) -> None:
+        """错误 Context 不应执行工具或泄露值，未知名称应提前拒绝。"""
+
+        call_count = 0
+
+        @tool(
+            name="echo_tool",
+            purpose="验证 Context 失败行为。",
+            when_to_use="仅用于测试。",
+            parameters={"text": "要回显的文本。"},
+            returns="不应在错误时返回。",
+            common_failures="Context 不可用。",
+        )
+        def echo_tool(text: str, request: _RequestContext) -> str:
+            nonlocal call_count
+            del text, request
+            call_count += 1
+            return "unexpected"
+
+        with mock.patch(
+            "easyharness._internal.runtime.build_runtime_model",
+            return_value=FakeModel(),
+        ):
+            agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+                tools=[echo_tool],
+                enable_fileglide=False,
+            )
+            missing_events = list(agent.stream("use_tool"))
+            agent.reset()
+            wrong_type_events = list(
+                agent.stream("use_tool", request={"request_id": "secret-value"})
+            )
+            with self.assertRaisesRegex(ValueError, "Unknown tool Context parameters"):
+                agent.run("plain", unknown=_RequestContext("not-used"))
+
+        self.assertEqual(call_count, 0)
+        for events in (missing_events, wrong_type_events):
+            failed_event = next(
+                event
+                for event in events
+                if event.kind == "tool" and event.status == "failed"
+            )
+            failure_text = str(failed_event.data)
+            self.assertIn("request", failure_text)
+            self.assertIn("_RequestContext", failure_text)
+            self.assertNotIn("secret-value", failure_text)
+
+    def test_context_only_nullable_tool_uses_python_default(self) -> None:
+        """可空 Context-only 工具缺失值时应保留 Python 默认值。"""
+
+        @tool(
+            name="optional_context_only",
+            purpose="验证可空 Context 默认值。",
+            when_to_use="仅用于测试。",
+            parameters={},
+            returns="默认值标记。",
+            common_failures="不应失败。",
+        )
+        def optional_context_only(request: _RequestContext | None = None) -> str:
+            return "default" if request is None else request.request_id
+
+        schema = optional_context_only.tool_spec["inputSchema"]["json"]
+        self.assertEqual(schema.get("properties"), {})
+
+        async def invoke() -> list[object]:
+            return [
+                event
+                async for event in optional_context_only.stream(
+                    {"toolUseId": "tool-1", "input": {}},
+                    {},
+                )
+            ]
+
+        events = asyncio.run(invoke())
+        completed = next(
+            event
+            for event in events
+            if isinstance(event, dict)
+            and event.get("easyharness_tool", {}).get("status") == "completed"
+        )
+        self.assertEqual(
+            completed["easyharness_tool"]["output"]["model_text"],
+            "default",
+        )
+
+    def test_concurrent_private_context_maps_do_not_leak_between_tool_invocations(
+        self,
+    ) -> None:
+        """并发工具调用应各自使用私有 Context 映射。"""
+
+        observed_request_ids: list[str] = []
+
+        @tool(
+            name="concurrent_context_tool",
+            purpose="验证并发 Context 隔离。",
+            when_to_use="仅用于测试。",
+            parameters={"text": "模型输入。"},
+            returns="当前 Context 标识。",
+            common_failures="不应失败。",
+        )
+        async def concurrent_context_tool(text: str, request: _RequestContext) -> str:
+            await asyncio.sleep(0)
+            observed_request_ids.append(f"{text}:{request.request_id}")
+            return request.request_id
+
+        async def invoke(text: str, request_id: str) -> None:
+            async for _ in concurrent_context_tool.stream(
+                {"toolUseId": text, "input": {"text": text}},
+                {
+                    "_easyharness_tool_contexts": {
+                        "request": _RequestContext(request_id),
+                    },
+                },
+            ):
+                pass
+
+        async def invoke_concurrently() -> None:
+            await asyncio.gather(
+                invoke("first", "ctx-1"),
+                invoke("second", "ctx-2"),
+            )
+
+        asyncio.run(invoke_concurrently())
+        self.assertEqual(set(observed_request_ids), {"first:ctx-1", "second:ctx-2"})
+
+    def test_agent_rejects_conflicting_context_parameter_contracts(self) -> None:
+        """已注册工具同名 Context 类型冲突时应在构造期失败。"""
+
+        @tool(
+            name="first_context_tool",
+            purpose="定义第一个 Context 合同。",
+            when_to_use="仅用于测试。",
+            parameters={},
+            returns="不重要。",
+            common_failures="不应失败。",
+        )
+        def first_context_tool(request: _RequestContext) -> str:
+            return request.request_id
+
+        @tool(
+            name="second_context_tool",
+            purpose="定义冲突的 Context 合同。",
+            when_to_use="仅用于测试。",
+            parameters={},
+            returns="不重要。",
+            common_failures="不应失败。",
+        )
+        def second_context_tool(request: _AlternateRequestContext) -> str:
+            del request
+            return "second"
+
+        with mock.patch(
+            "easyharness._internal.runtime.build_runtime_model",
+            return_value=FakeModel(),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "request has conflicting declarations",
+            ):
+                Agent(
+                    model=ModelConfig(model="fake", api_key="fake"),
+                    system_prompt="test",
+                    tools=[first_context_tool, second_context_tool],
+                    enable_fileglide=False,
+                )
 
     def test_model_config_defaults_and_base_url_override(self) -> None:
         """ModelConfig 默认值与显式 base_url 覆盖应生效。"""
@@ -979,7 +1255,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertTrue(callable(build_fileglide_tools))
         self.assertEqual(
             set(easyharness.__all__),
-            {"Agent", "ModelConfig", "AgentEvent", "ToolOutput", "tool"},
+            {"Agent", "ModelConfig", "AgentEvent", "ToolContext", "ToolOutput", "tool"},
         )
 
     def test_fileglide_toolset_contains_expected_tools_and_respects_root(self) -> None:

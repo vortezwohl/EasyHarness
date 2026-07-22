@@ -14,7 +14,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterator, cast
+from typing import Iterator, Mapping, cast
 
 from strands import Agent as StrandsAgent
 from strands.agent.conversation_manager import ConversationManager
@@ -475,12 +475,42 @@ class _StrandsRuntime:
         self._model_config = model_config
         self._system_prompt = system_prompt
         self._tools = list(tools)
+        self._tool_context_contracts = self._build_tool_context_contracts()
         self._conversation_manager_template = conversation_manager
         self._agent: StrandsAgent
         self._conversation_manager: ConversationManager
         self._state_lock = threading.Lock()
         self._active_invocations = 0
         self.reset()
+
+    def _build_tool_context_contracts(self) -> dict[str, tuple[type[object], bool]]:
+        """构建已注册工具的隐藏 Context 名称合同。"""
+
+        contracts: dict[str, tuple[type[object], bool]] = {}
+        for tool_obj in self._tools:
+            for parameter in getattr(tool_obj, "context_parameters", ()):
+                contract = (parameter.context_type, parameter.nullable)
+                existing = contracts.get(parameter.name)
+                if existing is not None and existing != contract:
+                    raise ValueError(
+                        f"Context parameter {parameter.name} has "
+                        "conflicting declarations"
+                    )
+                contracts[parameter.name] = contract
+        return contracts
+
+    def _invocation_state(
+        self,
+        tool_contexts: Mapping[str, object],
+    ) -> dict[str, object]:
+        """为当前回合创建不共享的私有 Context 映射。"""
+
+        unknown_names = sorted(set(tool_contexts) - set(self._tool_context_contracts))
+        if unknown_names:
+            raise ValueError(
+                f"Unknown tool Context parameters: {', '.join(unknown_names)}"
+            )
+        return {"_easyharness_tool_contexts": dict(tool_contexts)}
 
     def _begin_invocation(self) -> None:
         """Mark one public invocation as active for cancellation routing."""
@@ -523,7 +553,7 @@ class _StrandsRuntime:
 
         self._agent = self._create_agent()
 
-    def run(self, prompt: str) -> str:
+    def run(self, prompt: str, **tool_contexts: object) -> str:
         """Run one synchronous session turn and return the final text.
 
         Args:
@@ -533,16 +563,20 @@ class _StrandsRuntime:
             Final assistant text for the current turn.
         """
 
+        invocation_state = self._invocation_state(tool_contexts)
         self._begin_invocation()
         bind_event_sink_if_supported(self._conversation_manager, None)
         try:
-            result = self._agent(prompt)
+            result = self._agent(
+                prompt,
+                invocation_state=invocation_state,
+            )
             return str(result).strip()
         finally:
             bind_event_sink_if_supported(self._conversation_manager, None)
             self._end_invocation()
 
-    def stream(self, prompt: str) -> Iterator[AgentEvent]:
+    def stream(self, prompt: str, **tool_contexts: object) -> Iterator[AgentEvent]:
         """Return the public event stream as a synchronous generator.
 
         Args:
@@ -552,6 +586,7 @@ class _StrandsRuntime:
             Unified `AgentEvent` objects.
         """
 
+        invocation_state = self._invocation_state(tool_contexts)
         output_queue: "queue.Queue[object]" = queue.Queue()
         self._begin_invocation()
 
@@ -564,7 +599,10 @@ class _StrandsRuntime:
                     mapper.emit_internal,
                 )
                 try:
-                    async for raw_event in self._agent.stream_async(prompt):
+                    async for raw_event in self._agent.stream_async(
+                        prompt,
+                        invocation_state=invocation_state,
+                    ):
                         mapper.feed(raw_event)
                     mapper.finalize()
                 finally:
@@ -627,7 +665,7 @@ class Agent:
             conversation_manager=conversation_manager,
         )
 
-    def run(self, prompt: str) -> str:
+    def run(self, prompt: str, **tool_contexts: object) -> str:
         """Run one turn and return the final text result.
 
         Args:
@@ -637,9 +675,9 @@ class Agent:
             Final assistant text output.
         """
 
-        return self._runtime.run(prompt)
+        return self._runtime.run(prompt, **tool_contexts)
 
-    def stream(self, prompt: str) -> Iterator[AgentEvent]:
+    def stream(self, prompt: str, **tool_contexts: object) -> Iterator[AgentEvent]:
         """Run one turn and return the unified event stream.
 
         Args:
@@ -649,7 +687,7 @@ class Agent:
             Unified `AgentEvent` objects.
         """
 
-        yield from self._runtime.stream(prompt)
+        yield from self._runtime.stream(prompt, **tool_contexts)
 
     def cancel(self) -> None:
         """Cancel the current invocation; do nothing while idle."""
