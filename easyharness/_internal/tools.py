@@ -281,12 +281,12 @@ class _EasyHarnessTool(AgentTool):
         Values are matched by the hidden parameter name.
         """
 
-        raw_contexts = invocation_state.get("_easyharness_tool_contexts", {})
+        raw_contexts = invocation_state.get("_easyharness_tool_contexts", dict())
         if not isinstance(raw_contexts, Mapping):
             raise _ToolContextInjectionError(
                 f"Tool {self.tool_name} received an invalid private context map"
             )
-        resolved: dict[str, object] = {}
+        resolved: dict[str, object] = dict()
         for parameter in self._context_parameters:
             if parameter.name not in raw_contexts:
                 if (
@@ -322,7 +322,7 @@ class _EasyHarnessTool(AgentTool):
             ValueError: Raised when metadata and signature do not match.
         """
 
-        fields: dict[str, tuple[object, object]] = {}
+        fields: dict[str, tuple[object, object]] = dict()
         context_names = {parameter.name for parameter in self._context_parameters}
         actual_parameters = [
             parameter
@@ -376,7 +376,7 @@ class _EasyHarnessTool(AgentTool):
 
         schema = self._input_model.model_json_schema()
         schema.pop("title", None)
-        for property_schema in schema.get("properties", {}).values():
+        for property_schema in schema.get("properties", dict()).values():
             property_schema.pop("title", None)
 
         return {
@@ -405,7 +405,7 @@ class _EasyHarnessTool(AgentTool):
     ) -> dict[str, ToolOutput]:
         """Return the context dictionary used to cache tool outputs."""
 
-        tool_outputs = invocation_state.setdefault("_easyharness_tool_outputs", {})
+        tool_outputs = invocation_state.setdefault("_easyharness_tool_outputs", dict())
         return cast(dict[str, ToolOutput], tool_outputs)
 
     async def stream(
@@ -431,7 +431,7 @@ class _EasyHarnessTool(AgentTool):
         start = time.perf_counter()
 
         try:
-            validated = self._input_model.model_validate(tool_use.get("input", {}))
+            validated = self._input_model.model_validate(tool_use.get("input", dict()))
         except ValidationError as error:
             duration_ms = int((time.perf_counter() - start) * 1000)
             message = error.json(ensure_ascii=False)

@@ -132,7 +132,7 @@ class _EventMapper:
         self._output_queue = output_queue
         self._thinking: _PhaseState | None = None
         self._assistant: _PhaseState | None = None
-        self._active_tools: dict[str, _ToolPhaseState] = {}
+        self._active_tools: dict[str, _ToolPhaseState] = dict()
 
     def _emit(
         self,
@@ -355,7 +355,7 @@ class _EventMapper:
             return
 
         if raw_event.get("type") == "tool_stream":
-            marker = raw_event.get("tool_stream_event", {}).get("data", {})
+            marker = raw_event.get("tool_stream_event", dict()).get("data", dict())
             tool_event = marker.get("easyharness_tool")
             if tool_event:
                 self._flush_thinking()
@@ -386,8 +386,8 @@ class _EventMapper:
                         status=status,
                         tool_event=tool_event,
                         text=tool_event.get("error")
-                        or tool_event.get("output", {}).get("preview")
-                        or tool_event.get("output", {}).get("model_text"),
+                        or tool_event.get("output", dict()).get("preview")
+                        or tool_event.get("output", dict()).get("model_text"),
                     )
             return
 
@@ -486,7 +486,7 @@ class _StrandsRuntime:
     def _build_tool_context_contracts(self) -> dict[str, tuple[type[object], bool]]:
         """Build the hidden Context contract names declared by registered tools."""
 
-        contracts: dict[str, tuple[type[object], bool]] = {}
+        contracts: dict[str, tuple[type[object], bool]] = dict()
         for tool_obj in self._tools:
             for parameter in getattr(tool_obj, "context_parameters", ()):
                 contract = (parameter.context_type, parameter.nullable)

@@ -161,9 +161,9 @@ class FakeModel(Model):
         """Emit one ordinary assistant text response."""
 
         yield {"messageStart": {"role": "assistant"}}
-        yield {"contentBlockStart": {"start": {}}}
+        yield {"contentBlockStart": {"start": dict()}}
         yield _text_chunk(text)
-        yield {"contentBlockStop": {}}
+        yield {"contentBlockStop": dict()}
         yield {"messageStop": {"stopReason": "end_turn"}}
         yield {
             "metadata": {
@@ -172,7 +172,7 @@ class FakeModel(Model):
                     "outputTokens": 1,
                     "totalTokens": 2,
                 },
-                "metrics": {},
+                "metrics": dict(),
             }
         }
 
@@ -185,14 +185,14 @@ class FakeModel(Model):
         """Emit assistant text chunks at a controlled pace for cancellation tests."""
 
         yield {"messageStart": {"role": "assistant"}}
-        yield {"contentBlockStart": {"start": {}}}
+        yield {"contentBlockStart": {"start": dict()}}
         if delay_before_first > 0:
             await asyncio.sleep(delay_before_first)
         for index, chunk in enumerate(chunks):
             yield _text_chunk(chunk)
             if delay_between > 0 and index < len(chunks) - 1:
                 await asyncio.sleep(delay_between)
-        yield {"contentBlockStop": {}}
+        yield {"contentBlockStop": dict()}
         yield {"messageStop": {"stopReason": "end_turn"}}
         yield {
             "metadata": {
@@ -201,7 +201,7 @@ class FakeModel(Model):
                     "outputTokens": 1,
                     "totalTokens": 2,
                 },
-                "metrics": {},
+                "metrics": dict(),
             }
         }
 
@@ -210,13 +210,13 @@ class FakeModel(Model):
         """Emit a response containing reasoning content and a tool use request."""
 
         yield {"messageStart": {"role": "assistant"}}
-        yield {"contentBlockStart": {"start": {}}}
+        yield {"contentBlockStart": {"start": dict()}}
         yield {
             "contentBlockDelta": {
                 "delta": {"reasoningContent": {"text": "先调用工具"}},
             }
         }
-        yield {"contentBlockStop": {}}
+        yield {"contentBlockStop": dict()}
         yield {
             "contentBlockStart": {
                 "start": {
@@ -232,7 +232,7 @@ class FakeModel(Model):
                 "delta": {"toolUse": {"input": '{"text": "pong"}'}},
             }
         }
-        yield {"contentBlockStop": {}}
+        yield {"contentBlockStop": dict()}
         yield {"messageStop": {"stopReason": "tool_use"}}
         yield {
             "metadata": {
@@ -241,7 +241,7 @@ class FakeModel(Model):
                     "outputTokens": 1,
                     "totalTokens": 2,
                 },
-                "metrics": {},
+                "metrics": dict(),
             }
         }
 
@@ -530,7 +530,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             name="optional_context_only",
             purpose="验证可空 Context 默认值。",
             when_to_use="仅用于测试。",
-            parameters={},
+            parameters=dict(),
             returns="默认值标记。",
             common_failures="不应失败。",
         )
@@ -538,14 +538,14 @@ class EasyHarnessSdkTests(unittest.TestCase):
             return "default" if request is None else request.request_id
 
         schema = optional_context_only.tool_spec["inputSchema"]["json"]
-        self.assertEqual(schema.get("properties"), {})
+        self.assertEqual(schema.get("properties"), dict())
 
         async def invoke() -> list[object]:
             return [
                 event
                 async for event in optional_context_only.stream(
-                    {"toolUseId": "tool-1", "input": {}},
-                    {},
+                    {"toolUseId": "tool-1", "input": dict()},
+                    dict(),
                 )
             ]
 
@@ -554,7 +554,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             event
             for event in events
             if isinstance(event, dict)
-            and event.get("easyharness_tool", {}).get("status") == "completed"
+            and event.get("easyharness_tool", dict()).get("status") == "completed"
         )
         self.assertEqual(
             completed["easyharness_tool"]["output"]["model_text"],
@@ -608,7 +608,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             name="first_context_tool",
             purpose="定义第一个 Context 合同。",
             when_to_use="仅用于测试。",
-            parameters={},
+            parameters=dict(),
             returns="不重要。",
             common_failures="不应失败。",
         )
@@ -619,7 +619,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             name="second_context_tool",
             purpose="定义冲突的 Context 合同。",
             when_to_use="仅用于测试。",
-            parameters={},
+            parameters=dict(),
             returns="不重要。",
             common_failures="不应失败。",
         )
@@ -749,7 +749,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             name="ping_tool",
             purpose="返回固定文本。",
             when_to_use="当模型需要一个无需输入的探活工具时使用。",
-            parameters={},
+            parameters=dict(),
             returns="返回固定文本 pong。",
             common_failures=["不会失败"],
         )
@@ -762,7 +762,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 name="still_bad_tool",
                 purpose="测试",
                 when_to_use="测试",
-                parameters={},
+                parameters=dict(),
                 returns="测试",
                 common_failures=["失败"],
             )
@@ -919,7 +919,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 model=ModelConfig(model="fake", api_key="fake"),
                 system_prompt="test",
             )
-            result_holder: dict[str, str] = {}
+            result_holder: dict[str, str] = dict()
 
             def invoke() -> None:
                 result_holder["value"] = agent.run("slow_stream")

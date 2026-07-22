@@ -150,11 +150,11 @@ class _DeepSeekLiteLLMModel(LiteLLMModel):
 
             formatted_message: dict[str, Any] = {
                 "role": message["role"],
-                **({"content": formatted_contents} if formatted_contents else {}),
+                **({"content": formatted_contents} if formatted_contents else dict()),
                 **(
                     {"tool_calls": formatted_tool_calls}
                     if formatted_tool_calls
-                    else {}
+                    else dict()
                 ),
             }
 
