@@ -1010,6 +1010,131 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(default_model.get_config()["params"]["temperature"], 0.01)
         self.assertEqual(default_model.get_config()["params"]["top_p"], 0.01)
 
+    def test_model_config_forwards_extra_request_parameters(self) -> None:
+        """Extra request parameters and extra_body must reach LiteLLM unchanged."""
+
+        extra_body = {"provider_option": {"enabled": True}}
+        extra_params = {
+            "max_tokens": 512,
+            "reasoning_effort": "high",
+            "extra_body": extra_body,
+        }
+        config = ModelConfig(
+            model="openai/gpt-4.1-mini",
+            api_key="k",
+            extra_params=extra_params,
+        )
+        runtime_model = build_runtime_model(config)
+
+        params = runtime_model.get_config()["params"]
+        self.assertEqual(params["max_tokens"], 512)
+        self.assertEqual(params["reasoning_effort"], "high")
+        self.assertEqual(
+            params["extra_body"],
+            {"provider_option": {"enabled": True}},
+        )
+
+        request = runtime_model.format_request(messages=[])
+        self.assertEqual(request["max_tokens"], 512)
+        self.assertEqual(
+            request["extra_body"],
+            {"provider_option": {"enabled": True}},
+        )
+
+        extra_body["provider_option"] = {"enabled": False}
+        extra_params["max_tokens"] = 1
+        self.assertEqual(
+            config.extra_params["extra_body"],
+            {"provider_option": {"enabled": True}},
+        )
+        self.assertEqual(config.extra_params["max_tokens"], 512)
+
+        rebuilt_model = build_runtime_model(config)
+        rebuilt_params = rebuilt_model.get_config()["params"]
+        self.assertEqual(rebuilt_params["max_tokens"], 512)
+        self.assertEqual(
+            rebuilt_params["extra_body"],
+            {"provider_option": {"enabled": True}},
+        )
+
+    def test_model_config_explicit_parameters_override_extra_parameters(self) -> None:
+        """Explicit sampling fields must override conflicting generic values."""
+
+        runtime_model = build_runtime_model(
+            ModelConfig(
+                model="openai/gpt-4.1-mini",
+                api_key="k",
+                temperature=0.7,
+                top_p=0.8,
+                seed=9,
+                extra_params={
+                    "temperature": 0.1,
+                    "top_p": 0.2,
+                    "seed": 3,
+                },
+            )
+        )
+        params = runtime_model.get_config()["params"]
+
+        self.assertEqual(params["temperature"], 0.7)
+        self.assertEqual(params["top_p"], 0.8)
+        self.assertEqual(params["seed"], 9)
+
+    def test_model_config_allows_extra_seed_when_explicit_seed_is_unset(self) -> None:
+        """An unset optional seed must preserve the generic request parameter."""
+
+        runtime_model = build_runtime_model(
+            ModelConfig(
+                model="openai/gpt-4.1-mini",
+                api_key="k",
+                extra_params={"seed": 7},
+            )
+        )
+
+        self.assertEqual(runtime_model.get_config()["params"]["seed"], 7)
+
+    def test_model_config_rejects_invalid_extra_parameter_shapes(self) -> None:
+        """Generic parameters must retain a deterministic public shape."""
+
+        with self.assertRaisesRegex(TypeError, "extra_params must be a mapping"):
+            ModelConfig(
+                model="openai/gpt-4.1-mini",
+                api_key="k",
+                extra_params=object(),  # type: ignore[arg-type]
+            )
+        with self.assertRaisesRegex(TypeError, "extra_params keys must be strings"):
+            ModelConfig(
+                model="openai/gpt-4.1-mini",
+                api_key="k",
+                extra_params={1: "value"},  # type: ignore[dict-item]
+            )
+        with self.assertRaisesRegex(
+            TypeError,
+            r"extra_params\['extra_body'\] must be a mapping",
+        ):
+            ModelConfig(
+                model="openai/gpt-4.1-mini",
+                api_key="k",
+                extra_params={"extra_body": "invalid"},
+            )
+
+    def test_model_config_rejects_runtime_owned_extra_parameters(self) -> None:
+        """Generic parameters must not override agent-owned request state."""
+
+        for reserved_name in ("messages", "model", "stream", "api_key"):
+            with self.subTest(reserved_name=reserved_name):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "extra_params cannot override reserved parameters",
+                ):
+                    build_runtime_model(
+                        ModelConfig(
+                            model="openai/gpt-4.1-mini",
+                            api_key="k",
+                            extra_params={reserved_name: "invalid"},
+                        )
+                    )
+
     def test_deepseek_runtime_model_preserves_reasoning_for_tool_calls(self) -> None:
         """DeepSeek tool-call history must preserve reasoning."""
 

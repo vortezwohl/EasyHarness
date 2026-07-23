@@ -203,7 +203,18 @@ The official tools are `fileglide_list_tree`, `fileglide_search_paths`, `filegli
 
 ### Tune model and context behavior
 
-`ModelConfig` requires only `model` and `api_key`. Add `base_url`, `temperature`, `top_p`, `seed`, or `context_window_limit` as needed. When no context limit is provided, the SDK tries known model metadata before falling back to `200000`.
+`ModelConfig` requires only `model` and `api_key`. Add `base_url`, `temperature`, `top_p`, `seed`, `context_window_limit`, or `extra_params` as needed. `extra_params` forwards additional LiteLLM request parameters, including OpenAI-compatible `extra_body`; explicit `temperature`, `top_p`, and a non-`None` `seed` take precedence over matching entries. It cannot override agent-owned request state, transport settings, credentials, or endpoints. When no context limit is provided, the SDK tries known model metadata before falling back to `200000`.
+
+```python
+model = ModelConfig(
+    model="gpt-5.4",
+    api_key="YOUR_API_KEY",
+    extra_params={
+        "max_tokens": 4096,
+        "extra_body": {"provider_option": "value"},
+    },
+)
+```
 
 The default conversation manager uses `summary_ratio=0.3`, `preserve_recent_messages=8`, and a 70% proactive-compression threshold. Pass a custom `conversation_manager` to change that policy; compression start, completion, and failure appear as `compress` events.
 

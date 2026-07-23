@@ -19,6 +19,25 @@ from easyharness._internal.types import ModelConfig
 
 logger = logging.getLogger(__name__)
 DEFAULT_CONTEXT_WINDOW_LIMIT = 200_000
+_RESERVED_EXTRA_PARAM_NAMES = frozenset(
+    {
+        "api_key",
+        "api_version",
+        "base_url",
+        "client",
+        "context_window_limit",
+        "custom_llm_provider",
+        "http_client",
+        "messages",
+        "model",
+        "shared_session",
+        "stream",
+        "stream_options",
+        "timeout",
+        "tool_choice",
+        "tools",
+    }
+)
 
 
 def _model_mentions_deepseek(model_id: str) -> bool:
@@ -69,6 +88,36 @@ def _resolve_context_window_limit(config: ModelConfig) -> int:
         return resolved_limit
 
     return DEFAULT_CONTEXT_WINDOW_LIMIT
+
+
+def _build_model_params(config: ModelConfig) -> dict[str, object]:
+    """Merge generic request parameters with EasyHarness-owned model settings.
+
+    Args:
+        config: Public SDK model configuration.
+
+    Returns:
+        Parameters safe to pass through the Strands LiteLLM model boundary.
+
+    Raises:
+        ValueError: If generic parameters attempt to override runtime-owned data.
+    """
+
+    reserved_names = sorted(
+        set(config.extra_params).intersection(_RESERVED_EXTRA_PARAM_NAMES)
+    )
+    if reserved_names:
+        raise ValueError(
+            "extra_params cannot override reserved parameters: "
+            f"{', '.join(reserved_names)}"
+        )
+
+    params = dict(config.extra_params)
+    params["temperature"] = config.temperature
+    params["top_p"] = config.top_p
+    if config.seed is not None:
+        params["seed"] = config.seed
+    return params
 
 
 def _should_use_deepseek_compat(config: ModelConfig) -> bool:
@@ -211,12 +260,7 @@ def build_runtime_model(config: ModelConfig) -> LiteLLMModel:
         A configured `LiteLLMModel` instance.
     """
 
-    params: dict[str, object] = {
-        "temperature": config.temperature,
-        "top_p": config.top_p,
-    }
-    if config.seed is not None:
-        params["seed"] = config.seed
+    params = _build_model_params(config)
 
     context_window_limit = _resolve_context_window_limit(config)
     model_cls = (

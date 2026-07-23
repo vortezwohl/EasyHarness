@@ -7,7 +7,9 @@ share these types to keep the public semantics stable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Annotated, Literal
 
 
@@ -100,6 +102,9 @@ class ModelConfig:
         seed: Optional random seed; falls back to provider defaults when unset.
         context_window_limit: Optional explicit context window override used
             when the caller knows the real model capacity.
+        extra_params: Additional LiteLLM request parameters. Explicit fields
+            such as temperature, top_p, and a non-None seed take precedence.
+            The extra_body value, when supplied, must be a string-keyed mapping.
     """
 
     model: str
@@ -109,6 +114,32 @@ class ModelConfig:
     top_p: float = .01
     seed: int | None = None
     context_window_limit: int | None = None
+    extra_params: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Validate and snapshot caller-supplied upstream request parameters.
+
+        The snapshot prevents top-level mutations to the caller's mapping from
+        changing the configuration used by a later Agent reset. Parameter values
+        remain opaque because LiteLLM accepts provider-specific Python objects.
+        """
+
+        if not isinstance(self.extra_params, Mapping):
+            raise TypeError("extra_params must be a mapping")
+
+        extra_params = dict(self.extra_params)
+        if any(not isinstance(name, str) for name in extra_params):
+            raise TypeError("extra_params keys must be strings")
+
+        extra_body = extra_params.get("extra_body")
+        if extra_body is not None:
+            if not isinstance(extra_body, Mapping):
+                raise TypeError("extra_params['extra_body'] must be a mapping")
+            if any(not isinstance(name, str) for name in extra_body):
+                raise TypeError("extra_params['extra_body'] keys must be strings")
+            extra_params["extra_body"] = MappingProxyType(dict(extra_body))
+
+        object.__setattr__(self, "extra_params", MappingProxyType(extra_params))
 
 
 @dataclass(slots=True, frozen=True)
