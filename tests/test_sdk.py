@@ -8,14 +8,17 @@ registries, bridges, or private contract objects.
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import json
+import pickle
 import queue
 import tempfile
 import threading
 import time
 import unittest
 from collections.abc import AsyncGenerator
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Protocol
@@ -1041,13 +1044,22 @@ class EasyHarnessSdkTests(unittest.TestCase):
             {"provider_option": {"enabled": True}},
         )
 
-        extra_body["provider_option"] = {"enabled": False}
+        extra_body["provider_option"]["enabled"] = False
         extra_params["max_tokens"] = 1
         self.assertEqual(
             config.extra_params["extra_body"],
             {"provider_option": {"enabled": True}},
         )
         self.assertEqual(config.extra_params["max_tokens"], 512)
+
+        config_extra_body = config.extra_params["extra_body"]
+        config_extra_body["provider_option"]["enabled"] = False
+        self.assertEqual(
+            config.extra_params["extra_body"],
+            {"provider_option": {"enabled": True}},
+        )
+
+        params["extra_body"]["provider_option"]["enabled"] = False
 
         rebuilt_model = build_runtime_model(config)
         rebuilt_params = rebuilt_model.get_config()["params"]
@@ -1121,7 +1133,16 @@ class EasyHarnessSdkTests(unittest.TestCase):
     def test_model_config_rejects_runtime_owned_extra_parameters(self) -> None:
         """Generic parameters must not override agent-owned request state."""
 
-        for reserved_name in ("messages", "model", "stream", "api_key"):
+        for reserved_name in (
+            "messages",
+            "model",
+            "stream",
+            "api_key",
+            "function_call",
+            "functions",
+            "n",
+            "parallel_tool_calls",
+        ):
             with self.subTest(reserved_name=reserved_name):
                 with self.assertRaisesRegex(
                     ValueError,
@@ -1134,6 +1155,35 @@ class EasyHarnessSdkTests(unittest.TestCase):
                             extra_params={reserved_name: "invalid"},
                         )
                     )
+
+    def test_model_config_rejects_reserved_extra_body_parameters(self) -> None:
+        """extra_body must not bypass Agent-owned request state."""
+
+        for reserved_name in ("messages", "model", "tools", "functions"):
+            with self.subTest(reserved_name=reserved_name):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    r"extra_params\['extra_body'\] cannot override",
+                ):
+                    build_runtime_model(
+                        ModelConfig(
+                            model="openai/gpt-4.1-mini",
+                            api_key="k",
+                            extra_params={
+                                "extra_body": {reserved_name: "invalid"},
+                            },
+                        )
+                    )
+
+    def test_model_config_preserves_dataclass_compatibility(self) -> None:
+        """The added parameter mapping must not break dataclass helpers."""
+
+        config = ModelConfig(model="openai/gpt-4.1-mini", api_key="k")
+
+        self.assertIsInstance(hash(config), int)
+        self.assertEqual(copy.deepcopy(config), config)
+        self.assertEqual(asdict(config)["extra_params"], {})
+        self.assertEqual(pickle.loads(pickle.dumps(config)), config)
 
     def test_deepseek_runtime_model_preserves_reasoning_for_tool_calls(self) -> None:
         """DeepSeek tool-call history must preserve reasoning."""

@@ -7,9 +7,8 @@ share these types to keep the public semantics stable.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from types import MappingProxyType
 from typing import Annotated, Literal
 
 
@@ -19,6 +18,68 @@ class AgentBusyError(RuntimeError):
 
 EventKind = Literal["thinking", "tool", "assistant", "compress", "system"]
 EventStatus = Literal["started", "delta", "completed", "failed", "cancelled"]
+
+
+def _copy_extra_param_value(value: object) -> object:
+    """Copy standard mutable containers while preserving provider-specific leaves."""
+
+    if isinstance(value, Mapping):
+        return {
+            key: _copy_extra_param_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_copy_extra_param_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_extra_param_value(item) for item in value)
+    if isinstance(value, set):
+        return {_copy_extra_param_value(item) for item in value}
+    return value
+
+
+def copy_extra_params(params: Mapping[str, object]) -> dict[str, object]:
+    """Return an independent copy of standard extra-parameter containers."""
+
+    return {
+        name: _copy_extra_param_value(value)
+        for name, value in params.items()
+    }
+
+
+class _FrozenParams(Mapping[str, object]):
+    """Pickle-safe mapping that prevents mutation of stored model parameters."""
+
+    def __init__(self, values: Mapping[str, object]) -> None:
+        """Store an independent snapshot of standard mutable containers."""
+
+        self._values = copy_extra_params(values)
+
+    def __getitem__(self, name: str) -> object:
+        """Return an independent copy so nested containers cannot mutate state."""
+
+        return _copy_extra_param_value(self._values[name])
+
+    def __iter__(self) -> Iterator[str]:
+        """Iterate parameter names without exposing mutable values."""
+
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        """Return the number of stored parameters."""
+
+        return len(self._values)
+
+    def __reduce__(self) -> tuple[type[_FrozenParams], tuple[dict[str, object]]]:
+        """Reconstruct the immutable mapping from serializable parameter data."""
+
+        return type(self), (copy_extra_params(self),)
+
+    def __deepcopy__(self, memo: dict[int, object]) -> _FrozenParams:
+        """Create another immutable snapshot for copy and dataclass helpers."""
+
+        copied = type(self)(self)
+        memo[id(self)] = copied
+        return copied
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,14 +175,13 @@ class ModelConfig:
     top_p: float = .01
     seed: int | None = None
     context_window_limit: int | None = None
-    extra_params: Mapping[str, object] = field(default_factory=dict)
+    extra_params: Mapping[str, object] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         """Validate and snapshot caller-supplied upstream request parameters.
 
-        The snapshot prevents top-level mutations to the caller's mapping from
-        changing the configuration used by a later Agent reset. Parameter values
-        remain opaque because LiteLLM accepts provider-specific Python objects.
+        Standard mutable containers are copied recursively and the resulting
+        mapping rejects mutation. Provider-specific object values remain opaque.
         """
 
         if not isinstance(self.extra_params, Mapping):
@@ -137,9 +197,7 @@ class ModelConfig:
                 raise TypeError("extra_params['extra_body'] must be a mapping")
             if any(not isinstance(name, str) for name in extra_body):
                 raise TypeError("extra_params['extra_body'] keys must be strings")
-            extra_params["extra_body"] = MappingProxyType(dict(extra_body))
-
-        object.__setattr__(self, "extra_params", MappingProxyType(extra_params))
+        object.__setattr__(self, "extra_params", _FrozenParams(extra_params))
 
 
 @dataclass(slots=True, frozen=True)

@@ -8,6 +8,7 @@ environment variables or introduce extra channel/profile indirection.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from strands.models._defaults import get_context_window_limit
@@ -15,7 +16,7 @@ from strands.models._validation import _has_location_source
 from strands.models.litellm import LiteLLMModel
 from strands.types.content import ContentBlock, Messages, SystemContentBlock
 
-from easyharness._internal.types import ModelConfig
+from easyharness._internal.types import ModelConfig, copy_extra_params
 
 logger = logging.getLogger(__name__)
 DEFAULT_CONTEXT_WINDOW_LIMIT = 200_000
@@ -27,9 +28,13 @@ _RESERVED_EXTRA_PARAM_NAMES = frozenset(
         "client",
         "context_window_limit",
         "custom_llm_provider",
+        "function_call",
+        "functions",
         "http_client",
         "messages",
         "model",
+        "n",
+        "parallel_tool_calls",
         "shared_session",
         "stream",
         "stream_options",
@@ -103,21 +108,32 @@ def _build_model_params(config: ModelConfig) -> dict[str, object]:
         ValueError: If generic parameters attempt to override runtime-owned data.
     """
 
-    reserved_names = sorted(
-        set(config.extra_params).intersection(_RESERVED_EXTRA_PARAM_NAMES)
-    )
-    if reserved_names:
-        raise ValueError(
-            "extra_params cannot override reserved parameters: "
-            f"{', '.join(reserved_names)}"
-        )
+    _reject_reserved_extra_params(config.extra_params, "extra_params")
 
-    params = dict(config.extra_params)
+    extra_body = config.extra_params.get("extra_body")
+    if isinstance(extra_body, Mapping):
+        _reject_reserved_extra_params(extra_body, "extra_params['extra_body']")
+
+    params = copy_extra_params(config.extra_params)
     params["temperature"] = config.temperature
     params["top_p"] = config.top_p
     if config.seed is not None:
         params["seed"] = config.seed
     return params
+
+
+def _reject_reserved_extra_params(
+    params: Mapping[str, object],
+    location: str,
+) -> None:
+    """Reject generic parameters that would override Agent-owned request data."""
+
+    reserved_names = sorted(set(params).intersection(_RESERVED_EXTRA_PARAM_NAMES))
+    if reserved_names:
+        raise ValueError(
+            f"{location} cannot override reserved parameters: "
+            f"{', '.join(reserved_names)}"
+        )
 
 
 def _should_use_deepseek_compat(config: ModelConfig) -> bool:
