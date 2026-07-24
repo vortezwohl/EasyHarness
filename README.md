@@ -157,26 +157,31 @@ class RequestContext:
 
 @tool(
     name="tenant_summary",
-    purpose="Read a summary for the active tenant.",
-    when_to_use="Use when the user asks about the active tenant.",
-    parameters={},
-    returns="A summary for the active tenant.",
-    common_failures=["The request context was not supplied."],
+    purpose="Read a requested summary section for the active tenant.",
+    when_to_use="Use when the user asks for a specific summary section about the active tenant.",
+    parameters={"section": "Summary section to retrieve."},
+    returns="A summary for the requested section and active tenant.",
+    common_failures=["The request context or summary section was not supplied."],
 )
-def tenant_summary(request: ToolContext[RequestContext]) -> ToolOutput:
-    return ToolOutput(model_text=f"Active tenant: {request.tenant_id}")
+def tenant_summary(
+    section: str,
+    request: ToolContext[RequestContext],
+) -> ToolOutput:
+    return ToolOutput(
+        model_text=f"{section} summary for active tenant: {request.tenant_id}"
+    )
 
 
 agent = Agent(
     model=ModelConfig(model="gpt-5.4", api_key="YOUR_API_KEY"),
-    system_prompt="Call tenant_summary when the user asks about the active tenant.",
+    system_prompt="Call tenant_summary when the user asks for a specific summary section about the active tenant.",
     tools=[tenant_summary],
     enable_fileglide=False,
 )
 
 print(
     agent.run(
-        "What is my active tenant?",
+        "Show me the billing summary for my active tenant.",
         request=RequestContext(tenant_id="acme"),
     )
 )
