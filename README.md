@@ -99,18 +99,18 @@ from easyharness import Agent, ModelConfig, ToolOutput, tool
 
 @tool(
     name="get_build_status",
-    purpose="Read the latest build status.",
-    when_to_use="Use when the user asks whether the latest build passed.",
-    parameters={},
-    returns="A normalized build-status result.",
-    common_failures=["No build record is available."],
+    purpose="Read the latest build status for a branch.",
+    when_to_use="Use when the user asks whether the latest build passed on a specific branch.",
+    parameters={"branch": "Branch whose latest build status should be read."},
+    returns="A normalized build-status result for the requested branch.",
+    common_failures=["No build record is available for the requested branch."],
 )
-def get_build_status() -> ToolOutput:
+def get_build_status(branch: str) -> ToolOutput:
     return ToolOutput(
-        data={"status": "passed"},
-        model_text="The latest build passed.",
-        preview="Build passed",
-        detail='{"status": "passed"}',
+        data={"branch": branch, "status": "passed"},
+        model_text=f"The latest build for {branch} passed.",
+        preview=f"{branch}: build passed",
+        detail=f"Build status for {branch}: passed",
     )
 
 
@@ -121,7 +121,7 @@ agent = Agent(
     enable_fileglide=False,
 )
 
-print(agent.run("Did the latest build pass?"))
+print(agent.run("Did the latest build pass on main?"))
 ```
 
 ### Drive a live interface
