@@ -379,6 +379,8 @@ def _context_value_matches(
 def _context_payload_description(annotation: object) -> str:
     """Return a safe descriptive label for one expected Context payload."""
 
+    if get_origin(annotation) is not None:
+        return str(annotation).replace("typing.", "")
     if isinstance(annotation, type):
         return annotation.__name__
     return str(annotation).replace("typing.", "")

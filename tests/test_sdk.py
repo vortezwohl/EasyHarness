@@ -849,6 +849,123 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 del payload
                 return "unexpected"
 
+    def test_tool_context_descriptions_preserve_generic_shapes(self) -> None:
+        """Context errors must retain safe, declared generic type information."""
+
+        from easyharness._internal.tools import _context_payload_description
+
+        context_type_name = f"{_RequestContext.__module__}._RequestContext"
+        descriptions = {
+            _RequestContext: "_RequestContext",
+            dict[str, _RequestContext]: f"dict[str, {context_type_name}]",
+            dict[str, list[_RequestContext]]: f"dict[str, list[{context_type_name}]]",
+            list[_RequestContext]: f"list[{context_type_name}]",
+            set[str]: "set[str]",
+            tuple[str, int]: "tuple[str, int]",
+            tuple[_RequestContext, ...]: f"tuple[{context_type_name}, ...]",
+        }
+        for annotation, expected in descriptions.items():
+            with self.subTest(annotation=annotation):
+                self.assertEqual(_context_payload_description(annotation), expected)
+
+        @tool(
+            name="container_context_description_tool",
+            purpose="Validate container Context errors.",
+            when_to_use="Use only in tests.",
+            parameters=dict(),
+            returns="The Context marker.",
+            common_failures="The Context payload is invalid.",
+        )
+        def container_context_description_tool(
+            mapping: ToolContext[dict[str, list[_RequestContext]]],
+            items: ToolContext[list[_RequestContext]],
+            labels: ToolContext[set[str]],
+        ) -> str:
+            del mapping, items, labels
+            return "ok"
+
+        valid_mapping = {"request": [_RequestContext("valid")]}
+        valid_items = [_RequestContext("valid")]
+        valid_labels = {"one"}
+        self.assertEqual(
+            container_context_description_tool(
+                valid_mapping,
+                valid_items,
+                valid_labels,
+            ),
+            "ok",
+        )
+
+        container_failures = [
+            (
+                "dict[str, list[",
+                {"request": [_AlternateRequestContext()]},
+                valid_items,
+                valid_labels,
+            ),
+            (
+                "list[",
+                valid_mapping,
+                [_AlternateRequestContext()],
+                valid_labels,
+            ),
+            (
+                "set[str]",
+                valid_mapping,
+                valid_items,
+                {1},
+            ),
+        ]
+        for expected_type, mapping, items, labels in container_failures:
+            with self.subTest(expected_type=expected_type):
+                with self.assertRaises(TypeError) as error_context:
+                    container_context_description_tool(mapping, items, labels)
+                error_text = str(error_context.exception)
+                self.assertIn(expected_type, error_text)
+                self.assertNotIn("_AlternateRequestContext", error_text)
+
+        @tool(
+            name="tuple_context_description_tool",
+            purpose="Validate tuple Context errors.",
+            when_to_use="Use only in tests.",
+            parameters=dict(),
+            returns="The Context marker.",
+            common_failures="The Context payload is invalid.",
+        )
+        def tuple_context_description_tool(
+            fixed: ToolContext[tuple[str, int]],
+            repeated: ToolContext[tuple[_RequestContext, ...]],
+        ) -> str:
+            del fixed, repeated
+            return "ok"
+
+        with self.assertRaisesRegex(TypeError, r"tuple\[str, int\]"):
+            tuple_context_description_tool(("wrong",), (_RequestContext("valid"),))
+        with self.assertRaisesRegex(TypeError, r"tuple\[") as error_context:
+            tuple_context_description_tool(
+                ("valid", 1),
+                (_AlternateRequestContext(),),
+            )
+        self.assertNotIn("_AlternateRequestContext", str(error_context.exception))
+
+        @tool(
+            name="optional_context_description_tool",
+            purpose="Validate optional Context errors.",
+            when_to_use="Use only in tests.",
+            parameters=dict(),
+            returns="The Context marker.",
+            common_failures="The Context payload is invalid.",
+        )
+        def optional_context_description_tool(
+            items: OptionalToolContext[list[_RequestContext]],
+        ) -> str:
+            return "none" if items is None else "items"
+
+        self.assertEqual(optional_context_description_tool(), "none")
+        with self.assertRaisesRegex(TypeError, r"list\[") as error_context:
+            optional_context_description_tool([_AlternateRequestContext()])
+        self.assertNotIn("_AlternateRequestContext", str(error_context.exception))
+
     def test_tool_context_rejects_empty_fixed_tuple_at_registration(self) -> None:
         """Empty fixed tuple Context annotations must fail before tool execution."""
 
