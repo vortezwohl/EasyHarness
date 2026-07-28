@@ -12,16 +12,14 @@ import logging
 import time
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import Callable, Protocol
 
 from strands.agent.conversation_manager import (
     ConversationManager,
     ProactiveCompressionConfig,
     SummarizingConversationManager,
 )
-
-if TYPE_CHECKING:
-    from strands.agent.agent import Agent as StrandsAgent
+from strands.agent.agent import Agent as StrandsAgent
 
 logger = logging.getLogger(__name__)
 
