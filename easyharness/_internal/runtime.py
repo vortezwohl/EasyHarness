@@ -96,19 +96,19 @@ def utc_now_iso() -> str:
 
 
 def _optional_str(value: object) -> str | None:
-    """仅在值为字符串时返回，用于收窄低层事件的无类型字段。"""
+    """Return the value only when it is a string."""
 
     return value if isinstance(value, str) else None
 
 
 def _optional_int(value: object) -> int | None:
-    """仅在值为非布尔整数时返回，用于收窄低层事件的时长字段。"""
+    """Return the value only when it is a non-boolean integer."""
 
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _event_status(value: object) -> EventStatus | None:
-    """在发布前验证无类型内部事件状态是否符合公开 Literal 契约。"""
+    """Validate untyped event statuses against the public Literal contract."""
 
     if isinstance(value, str) and value in _EVENT_STATUSES:
         return cast(EventStatus, value)
@@ -203,7 +203,7 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
         index: int,
         field: str,
     ) -> list[ToolResultContent]:
-        """将受支持的文本内容转换为 Strands 工具结果内容块。"""
+        """Convert supported text content into Strands tool-result blocks."""
 
         return [
             ToolResultContent(text=block["text"])

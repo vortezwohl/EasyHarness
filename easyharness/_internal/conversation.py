@@ -32,7 +32,7 @@ DEFAULT_PROACTIVE_COMPRESSION: ProactiveCompressionConfig = {
 
 
 class _UseDefaultProactiveCompression:
-    """区分省略配置与显式 None，避免默认字典被多个实例共享。"""
+    """Distinguish omitted configuration from explicit None values."""
 
 
 _USE_DEFAULT_PROACTIVE_COMPRESSION = _UseDefaultProactiveCompression()

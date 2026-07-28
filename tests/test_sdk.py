@@ -915,6 +915,18 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 valid_items,
                 {1},
             ),
+            (
+                "list[",
+                valid_mapping,
+                {_RequestContext("valid")},
+                valid_labels,
+            ),
+            (
+                "set[str]",
+                valid_mapping,
+                valid_items,
+                ["one"],
+            ),
         ]
         for expected_type, mapping, items, labels in container_failures:
             with self.subTest(expected_type=expected_type):
@@ -1865,7 +1877,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         )
 
     def test_event_mapper_ignores_invalid_compression_status(self) -> None:
-        """非法压缩状态不得突破公开 AgentEvent 的 Literal 契约。"""
+        """Ignore compression statuses outside the public AgentEvent contract."""
 
         output_queue: queue.Queue[object] = queue.Queue()
         mapper = _EventMapper(output_queue)
@@ -1882,7 +1894,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertTrue(output_queue.empty())
 
     def test_event_mapper_ignores_malformed_tool_stream_payloads(self) -> None:
-        """畸形底层工具流载荷不得导致事件映射器抛出属性错误。"""
+        """Ignore malformed tool-stream payloads without raising AttributeError."""
 
         output_queue: queue.Queue[object] = queue.Queue()
         mapper = _EventMapper(output_queue)

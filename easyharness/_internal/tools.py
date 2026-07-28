@@ -348,8 +348,13 @@ def _context_value_matches(
             return False
         if not arguments:
             return True
-    elif origin in (list, set):
-        if not isinstance(value, (list, set)):
+    elif origin is list:
+        if not isinstance(value, list):
+            return False
+        if not arguments:
+            return True
+    elif origin is set:
+        if not isinstance(value, set):
             return False
         if not arguments:
             return True
