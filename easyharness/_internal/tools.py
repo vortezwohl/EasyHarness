@@ -30,8 +30,16 @@ from typing import (
 )
 
 from pydantic import BaseModel, Field, ValidationError, create_model
-from strands.types._events import ToolResultEvent
-from strands.types.tools import AgentTool, ToolGenerator, ToolResult, ToolSpec, ToolUse
+from strands.types._events import ToolResultEvent  # noinspection PyProtectedMember
+from strands.types.tools import (
+    AgentTool,
+    ToolGenerator,
+    ToolResult,
+    ToolResultContent,
+    ToolResultStatus,
+    ToolSpec,
+    ToolUse,
+)
 
 from easyharness._internal.types import ToolOutput, _ToolContextAnnotation
 
@@ -104,11 +112,11 @@ def _tool_output_to_result(
     tool_use_id: str,
     output: ToolOutput,
     *,
-    status: str = "success",
+    status: ToolResultStatus = "success",
 ) -> ToolResult:
     """Convert public `ToolOutput` into the `ToolResult` expected by Strands."""
 
-    contents: list[dict[str, object]] = []
+    contents: list[ToolResultContent] = []
     if output.data is not None and not isinstance(output.data, str):
         contents.append({"json": output.data})
 
@@ -174,7 +182,6 @@ class _ToolContextParameter:
     payload_annotation: object
     nullable: bool
     default: object
-    kind: inspect._ParameterKind
 
 
 class _ToolContextInjectionError(ValueError):
@@ -212,7 +219,7 @@ def _tool_context_annotation(annotation: object) -> tuple[object, bool] | None:
     payload_annotation, optional = _direct_tool_context_annotation(context_arguments[0])
     if optional:
         raise ValueError(
-            "OptionalToolContext[PayloadType] must not be unioned with None; "
+            "OptionalToolContext[PayloadType] must not be combined with None; "
             "use OptionalToolContext[PayloadType] directly"
         )
     warnings.warn(
@@ -265,7 +272,7 @@ def _optional_context_payload_annotation(annotation: object) -> object:
 
 
 def _validate_tool_context_payload_annotation(annotation: object) -> None:
-    """Reject payload annotations outside the approved runtime-checkable grammar."""
+    """Reject payload annotations outside the approved runtime validation grammar."""
 
     if annotation is object:
         return
@@ -331,13 +338,28 @@ def _context_value_matches(
 
     origin = get_origin(annotation)
     if origin is None:
+        if not isinstance(annotation, type):
+            return False
         return isinstance(value, annotation)
-    if not isinstance(value, origin):
-        return False
 
     arguments = get_args(annotation)
-    if not arguments:
-        return True
+    if origin is dict:
+        if not isinstance(value, dict):
+            return False
+        if not arguments:
+            return True
+    elif origin in (list, set):
+        if not isinstance(value, (list, set)):
+            return False
+        if not arguments:
+            return True
+    elif origin is tuple:
+        if not isinstance(value, tuple):
+            return False
+        if not arguments:
+            return True
+    else:
+        return False
 
     if active_pairs is None:
         active_pairs = set()
@@ -534,7 +556,6 @@ class _EasyHarnessTool(AgentTool):
                     payload_annotation=payload_annotation,
                     nullable=nullable,
                     default=parameter.default,
-                    kind=parameter.kind,
                 )
             )
         return tuple(parameters)

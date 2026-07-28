@@ -1864,6 +1864,45 @@ class EasyHarnessSdkTests(unittest.TestCase):
             ],
         )
 
+    def test_event_mapper_ignores_invalid_compression_status(self) -> None:
+        """非法压缩状态不得突破公开 AgentEvent 的 Literal 契约。"""
+
+        output_queue: queue.Queue[object] = queue.Queue()
+        mapper = _EventMapper(output_queue)
+
+        mapper.emit_internal(
+            {
+                "easyharness_compress": {
+                    "status": "unknown",
+                    "started_at": utc_now_iso(),
+                }
+            }
+        )
+
+        self.assertTrue(output_queue.empty())
+
+    def test_event_mapper_ignores_malformed_tool_stream_payloads(self) -> None:
+        """畸形底层工具流载荷不得导致事件映射器抛出属性错误。"""
+
+        output_queue: queue.Queue[object] = queue.Queue()
+        mapper = _EventMapper(output_queue)
+
+        mapper.feed({"type": "tool_stream", "tool_stream_event": "invalid"})
+        mapper.feed(
+            {
+                "type": "tool_stream",
+                "tool_stream_event": {"data": "invalid"},
+            }
+        )
+        mapper.feed(
+            {
+                "type": "tool_stream",
+                "tool_stream_event": {"data": {"easyharness_tool": "invalid"}},
+            }
+        )
+
+        self.assertTrue(output_queue.empty())
+
     def test_event_mapper_keeps_same_name_tool_events_correlated(self) -> None:
         """Same-name tool events must retain their original tool-use ID."""
 

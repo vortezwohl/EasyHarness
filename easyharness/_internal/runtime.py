@@ -17,11 +17,12 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterator, cast
+from typing import Iterator, NoReturn, cast
 
 from strands import Agent as StrandsAgent
 from strands.agent.conversation_manager import ConversationManager
-from strands.types.content import Message, Messages
+from strands.types.content import ContentBlock, Message, Messages, ReasoningContentBlock
+from strands.types.tools import ToolResult, ToolResultContent, ToolResultStatus, ToolUse
 
 from easyharness._internal.conversation import (
     bind_event_sink_if_supported,
@@ -38,6 +39,13 @@ from easyharness._internal.types import (
 
 _STREAM_END = object()
 PromptInput = str | list[Mapping[str, object]]
+_EVENT_STATUSES: tuple[EventStatus, ...] = (
+    "started",
+    "delta",
+    "completed",
+    "failed",
+    "cancelled",
+)
 
 
 def _tool_public_name(tool_obj: object) -> str:
@@ -87,6 +95,26 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _optional_str(value: object) -> str | None:
+    """仅在值为字符串时返回，用于收窄低层事件的无类型字段。"""
+
+    return value if isinstance(value, str) else None
+
+
+def _optional_int(value: object) -> int | None:
+    """仅在值为非布尔整数时返回，用于收窄低层事件的时长字段。"""
+
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _event_status(value: object) -> EventStatus | None:
+    """在发布前验证无类型内部事件状态是否符合公开 Literal 契约。"""
+
+    if isinstance(value, str) and value in _EVENT_STATUSES:
+        return cast(EventStatus, value)
+    return None
+
+
 def _extract_message_text(message: Message | None) -> str:
     """Extract readable text from a Strands message."""
 
@@ -125,20 +153,20 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
             core message data.
     """
 
-    def fail(index: int, field: str, reason: str) -> None:
+    def fail(index: int, field: str, reason: str) -> NoReturn:
         raise ValueError(f"Message at index {index} has invalid {field}: {reason}")
 
     def text_blocks(
         value: object,
         index: int,
         field: str,
-    ) -> list[dict[str, object]]:
+    ) -> list[ContentBlock]:
         if isinstance(value, str):
-            return [{"text": value}]
+            return [ContentBlock(text=value)]
         if not isinstance(value, list):
             fail(index, field, "must be str or a list of text parts")
 
-        blocks: list[dict[str, object]] = []
+        text_content_blocks: list[ContentBlock] = []
         for part_index, raw_part in enumerate(value):
             part_field = f"{field}[{part_index}]"
             if not isinstance(raw_part, Mapping):
@@ -148,8 +176,8 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
             text = raw_part.get("text")
             if part_type not in (None, "text") or not isinstance(text, str):
                 fail(index, part_field, "must be a text part")
-            blocks.append({"text": text})
-        return blocks
+            text_content_blocks.append(ContentBlock(text=text))
+        return text_content_blocks
 
     def tool_input(
         value: object,
@@ -170,8 +198,20 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
 
         fail(index, field, "must be a JSON object string or mapping")
 
+    def tool_result_contents(
+        value: object,
+        index: int,
+        field: str,
+    ) -> list[ToolResultContent]:
+        """将受支持的文本内容转换为 Strands 工具结果内容块。"""
+
+        return [
+            ToolResultContent(text=block["text"])
+            for block in text_blocks(value, index, field)
+        ]
+
     if isinstance(prompt, str):
-        return [{"role": "user", "content": [{"text": prompt}]}]
+        return [Message(role="user", content=[ContentBlock(text=prompt)])]
     if not isinstance(prompt, list):
         raise ValueError("prompt must be str or list of message mappings")
 
@@ -192,32 +232,32 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
 
         if role == "user":
             messages.append(
-                {
-                    "role": "user",
-                    "content": text_blocks(
+                Message(
+                    role="user",
+                    content=text_blocks(
                         raw_message.get("content"),
                         message_index,
                         "content",
                     ),
-                }
+                )
             )
             continue
 
         if role == "assistant":
             content = raw_message.get("content")
             if content is None:
-                blocks: list[dict[str, object]] = []
+                message_blocks: list[ContentBlock] = []
             else:
-                blocks = text_blocks(content, message_index, "content")
+                message_blocks = text_blocks(content, message_index, "content")
 
             reasoning_content = raw_message.get("reasoning_content")
             if isinstance(reasoning_content, str):
-                blocks.append(
-                    {
-                        "reasoningContent": {
-                            "reasoningText": {"text": reasoning_content},
-                        }
-                    }
+                message_blocks.append(
+                    ContentBlock(
+                        reasoningContent=ReasoningContentBlock(
+                            reasoningText={"text": reasoning_content},
+                        )
+                    )
                 )
 
             tool_calls = raw_message.get("tool_calls")
@@ -255,27 +295,27 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
                             f"{call_path}.function.name",
                             "must be a non-empty str",
                         )
-                    blocks.append(
-                        {
-                            "toolUse": {
-                                "toolUseId": tool_use_id,
-                                "name": name,
-                                "input": tool_input(
+                    message_blocks.append(
+                        ContentBlock(
+                            toolUse=ToolUse(
+                                toolUseId=tool_use_id,
+                                name=name,
+                                input=tool_input(
                                     function.get("arguments"),
                                     message_index,
                                     f"{call_path}.function.arguments",
                                 ),
-                            }
-                        }
+                            )
+                        )
                     )
 
-            if not blocks:
+            if not message_blocks:
                 fail(
                     message_index,
                     "message",
                     "assistant message must include representable content",
                 )
-            messages.append({"role": "assistant", "content": blocks})
+            messages.append(Message(role="assistant", content=message_blocks))
             continue
 
         if role == "tool":
@@ -283,24 +323,26 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
             if not isinstance(tool_use_id, str) or not tool_use_id:
                 fail(message_index, "tool_call_id", "must be a non-empty str")
 
-            status = "error" if raw_message.get("status") == "error" else "success"
+            status: ToolResultStatus = (
+                "error" if raw_message.get("status") == "error" else "success"
+            )
             messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "toolResult": {
-                                "toolUseId": tool_use_id,
-                                "status": status,
-                                "content": text_blocks(
+                Message(
+                    role="user",
+                    content=[
+                        ContentBlock(
+                            toolResult=ToolResult(
+                                toolUseId=tool_use_id,
+                                status=status,
+                                content=tool_result_contents(
                                     raw_message.get("content"),
                                     message_index,
                                     "content",
                                 ),
-                            }
-                        }
+                            )
+                        )
                     ],
-                }
+                )
             )
             continue
 
@@ -380,7 +422,7 @@ class _EventMapper:
         )
 
     def _flush_thinking(
-        self, status: str = "completed", text_override: str | None = None
+        self, status: EventStatus = "completed", text_override: str | None = None
     ) -> None:
         """Finish the thinking phase and emit its terminal event."""
 
@@ -405,7 +447,7 @@ class _EventMapper:
         self._thinking = None
 
     def _flush_assistant(
-        self, status: str = "completed", text_override: str | None = None
+        self, status: EventStatus = "completed", text_override: str | None = None
     ) -> None:
         """Finish the assistant phase and emit its terminal event."""
 
@@ -433,37 +475,41 @@ class _EventMapper:
         self,
         *,
         status: EventStatus,
-        tool_event: dict[str, object] | None = None,
+        tool_event: Mapping[str, object] | None = None,
         text: str | None = None,
     ) -> None:
         """Emit the terminal event for the currently tracked tool phase."""
 
         tool_use_id = (
-            cast(str | None, tool_event.get("tool_use_id"))
-            if tool_event is not None
+            _optional_str(tool_event.get("tool_use_id")) if tool_event else None
+        )
+        tracked = (
+            self._active_tools.pop(tool_use_id)
+            if tool_use_id is not None
             else None
         )
-        tracked = self._active_tools.pop(tool_use_id) if tool_use_id is not None else None
         if tracked is None and tool_event is None:
             return
 
         started_at = (
             tracked.started_at
             if tracked is not None
-            else cast(str | None, tool_event.get("started_at"))
+            else _optional_str(tool_event.get("started_at"))
         )
         duration_ms = (
             int((time.perf_counter() - tracked.started_monotonic) * 1000)
             if tracked is not None
-            else cast(int | None, tool_event.get("duration_ms"))
+            else _optional_int(tool_event.get("duration_ms"))
         )
         name = (
             tracked.name
             if tracked is not None
-            else cast(str | None, tool_event.get("name"))
+            else _optional_str(tool_event.get("name"))
         )
         public_tool_use_id = tracked.tool_use_id if tracked is not None else tool_use_id
-        tool_input = tracked.tool_input if tracked is not None else tool_event.get("input")
+        tool_input = (
+            tracked.tool_input if tracked is not None else tool_event.get("input")
+        )
         output = tool_event.get("output") if tool_event is not None else None
 
         self._emit(
@@ -514,14 +560,16 @@ class _EventMapper:
         compress_event = payload.get("easyharness_compress")
         if not isinstance(compress_event, dict):
             return
-        compress_event = cast(dict[str, object], compress_event)
+        status = _event_status(compress_event.get("status"))
+        if status is None:
+            return
 
         self._emit(
             kind="compress",
-            status=compress_event["status"],
-            started_at=compress_event.get("started_at"),
-            duration_ms=compress_event.get("duration_ms"),
-            text=compress_event.get("error"),
+            status=status,
+            started_at=_optional_str(compress_event.get("started_at")),
+            duration_ms=_optional_int(compress_event.get("duration_ms")),
+            text=_optional_str(compress_event.get("error")),
             data={"mode": compress_event.get("mode")},
         )
 
@@ -542,7 +590,7 @@ class _EventMapper:
                     started_at=self._thinking.started_at,
                 )
 
-            chunk = raw_event.get("reasoningText") or ""
+            chunk = _optional_str(raw_event.get("reasoningText")) or ""
             self._thinking.chunks.append(chunk)
             self._emit(
                 kind="thinking",
@@ -553,26 +601,35 @@ class _EventMapper:
             return
 
         if raw_event.get("type") == "tool_stream":
-            marker = raw_event.get("tool_stream_event", dict()).get("data", dict())
+            stream_event = raw_event.get("tool_stream_event")
+            if not isinstance(stream_event, Mapping):
+                return
+            marker = stream_event.get("data")
+            if not isinstance(marker, Mapping):
+                return
             tool_event = marker.get("easyharness_tool")
-            if tool_event:
+            if isinstance(tool_event, Mapping):
                 self._flush_thinking()
-                status = cast(EventStatus, tool_event["status"])
+                status = _event_status(tool_event.get("status"))
+                if status is None:
+                    return
                 if status == "started":
-                    tool_use_id = cast(str | None, tool_event.get("tool_use_id"))
-                    if tool_use_id is not None:
+                    tool_use_id = _optional_str(tool_event.get("tool_use_id"))
+                    started_at = _optional_str(tool_event.get("started_at"))
+                    name = _optional_str(tool_event.get("name"))
+                    if tool_use_id is not None and started_at is not None:
                         self._active_tools[tool_use_id] = _ToolPhaseState(
-                            started_at=cast(str, tool_event["started_at"]),
+                            started_at=started_at,
                             started_monotonic=time.perf_counter(),
-                            name=cast(str | None, tool_event.get("name")),
+                            name=name,
                             tool_use_id=tool_use_id,
                             tool_input=tool_event.get("input"),
                         )
                     self._emit(
                         kind="tool",
                         status="started",
-                        name=tool_event.get("name"),
-                        started_at=tool_event.get("started_at"),
+                        name=name,
+                        started_at=started_at,
                         data={
                             "tool_use_id": tool_event.get("tool_use_id"),
                             "input": tool_event.get("input"),
@@ -580,12 +637,23 @@ class _EventMapper:
                         },
                     )
                 else:
+                    output = tool_event.get("output")
+                    output_preview = (
+                        _optional_str(output.get("preview"))
+                        if isinstance(output, Mapping)
+                        else None
+                    )
+                    output_model_text = (
+                        _optional_str(output.get("model_text"))
+                        if isinstance(output, Mapping)
+                        else None
+                    )
                     self._complete_tool_phase(
                         status=status,
                         tool_event=tool_event,
-                        text=tool_event.get("error")
-                        or tool_event.get("output", dict()).get("preview")
-                        or tool_event.get("output", dict()).get("model_text"),
+                        text=_optional_str(tool_event.get("error"))
+                        or output_preview
+                        or output_model_text,
                     )
             return
 
@@ -599,7 +667,7 @@ class _EventMapper:
                     started_at=self._assistant.started_at,
                 )
 
-            chunk = raw_event.get("data") or ""
+            chunk = _optional_str(raw_event.get("data")) or ""
             self._assistant.chunks.append(chunk)
             self._emit(
                 kind="assistant",
@@ -675,11 +743,10 @@ class _StrandsRuntime:
         self._tools = list(tools)
         self._tool_context_contracts = self._build_tool_context_contracts()
         self._conversation_manager_template = conversation_manager
-        self._agent: StrandsAgent
         self._conversation_manager: ConversationManager
         self._state_lock = threading.Lock()
         self._active_invocations = 0
-        self.reset()
+        self._agent = self._create_agent()
 
     def _build_tool_context_contracts(self) -> dict[str, object]:
         """Build the hidden Context payload contract for registered tools."""

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NoReturn
 
 
 class AgentBusyError(RuntimeError):
@@ -96,7 +96,7 @@ class ToolContext:
     normal application type and must not inherit from this annotation helper.
     """
 
-    def __new__(cls, *args: object, **kwargs: object) -> ToolContext:
+    def __new__(cls, *args: object, **kwargs: object) -> NoReturn:
         """Reject runtime construction because this type exists only for annotations."""
 
         del args, kwargs
@@ -110,7 +110,7 @@ class ToolContext:
             "ToolContext cannot be subclassed; use ToolContext[PayloadType]"
         )
 
-    def __class_getitem__(cls, payload_type: object) -> object:
+    def __class_getitem__(cls, payload_type: type[object]) -> object:
         """Attach required Context metadata to one payload type annotation."""
 
         return Annotated[payload_type, _ToolContextAnnotation(optional=False)]
@@ -123,7 +123,7 @@ class OptionalToolContext:
     resolve to ``None`` for runtime and direct decorated-tool calls.
     """
 
-    def __new__(cls, *args: object, **kwargs: object) -> OptionalToolContext:
+    def __new__(cls, *args: object, **kwargs: object) -> NoReturn:
         """Reject runtime construction because this type exists only for annotations."""
 
         del args, kwargs
@@ -141,7 +141,7 @@ class OptionalToolContext:
             "use OptionalToolContext[PayloadType]"
         )
 
-    def __class_getitem__(cls, payload_type: object) -> object:
+    def __class_getitem__(cls, payload_type: type[object]) -> object:
         """Attach optional Context metadata to one nullable payload annotation."""
 
         return Annotated[

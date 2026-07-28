@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+from copy import Error as CopyError
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Callable, Protocol
@@ -28,6 +29,13 @@ InternalEventSink = Callable[[dict[str, object]], None]
 DEFAULT_PROACTIVE_COMPRESSION: ProactiveCompressionConfig = {
     "compression_threshold": 0.7,
 }
+
+
+class _UseDefaultProactiveCompression:
+    """区分省略配置与显式 None，避免默认字典被多个实例共享。"""
+
+
+_USE_DEFAULT_PROACTIVE_COMPRESSION = _UseDefaultProactiveCompression()
 
 
 class SupportsEventSink(Protocol):
@@ -56,13 +64,17 @@ class EventingSummarizingConversationManager(SummarizingConversationManager):
         pin_first: int | None = None,
         proactive_compression: bool
         | ProactiveCompressionConfig
-        | None = DEFAULT_PROACTIVE_COMPRESSION,
-        **kwargs: object,
+        | None
+        | _UseDefaultProactiveCompression = _USE_DEFAULT_PROACTIVE_COMPRESSION,
     ) -> None:
         """Initialize a summarizing conversation manager with event support."""
 
-        if isinstance(proactive_compression, dict):
-            proactive_compression = deepcopy(proactive_compression)
+        if proactive_compression is _USE_DEFAULT_PROACTIVE_COMPRESSION:
+            resolved_proactive_compression = deepcopy(DEFAULT_PROACTIVE_COMPRESSION)
+        elif isinstance(proactive_compression, dict):
+            resolved_proactive_compression = deepcopy(proactive_compression)
+        else:
+            resolved_proactive_compression = proactive_compression
 
         super().__init__(
             summary_ratio=summary_ratio,
@@ -70,8 +82,7 @@ class EventingSummarizingConversationManager(SummarizingConversationManager):
             summarization_agent=summarization_agent,
             summarization_system_prompt=summarization_system_prompt,
             pin_first=pin_first,
-            proactive_compression=proactive_compression,
-            **kwargs,
+            proactive_compression=resolved_proactive_compression,
         )
         self._event_sink: InternalEventSink | None = None
 
@@ -98,16 +109,15 @@ class EventingSummarizingConversationManager(SummarizingConversationManager):
         if self._event_sink is None:
             return
 
-        payload: dict[str, object] = {
-            "easyharness_compress": {
-                "status": status,
-                "started_at": started_at,
-                "duration_ms": duration_ms,
-                "mode": mode,
-            }
+        compress_event: dict[str, object] = {
+            "status": status,
+            "started_at": started_at,
+            "duration_ms": duration_ms,
+            "mode": mode,
         }
         if error is not None:
-            payload["easyharness_compress"]["error"] = error
+            compress_event["error"] = error
+        payload = {"easyharness_compress": compress_event}
         self._event_sink(payload)
 
     def reduce_context(
@@ -179,7 +189,7 @@ def clone_conversation_manager(
 
     try:
         return deepcopy(conversation_manager)
-    except Exception:
+    except (CopyError, TypeError):
         return conversation_manager
 
 
