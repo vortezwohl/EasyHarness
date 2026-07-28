@@ -14,12 +14,13 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Callable, Protocol
 
+from strands.agent.agent import Agent as StrandsAgent
 from strands.agent.conversation_manager import (
     ConversationManager,
+    NullConversationManager,
     ProactiveCompressionConfig,
     SummarizingConversationManager,
 )
-from strands.agent.agent import Agent as StrandsAgent
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ def utc_now_iso() -> str:
 
 
 class EventingSummarizingConversationManager(SummarizingConversationManager):
-    """Default summarizing conversation manager with compression events."""
+    """Summarizing conversation manager that emits compression events."""
 
     def __init__(
         self,
@@ -53,10 +54,12 @@ class EventingSummarizingConversationManager(SummarizingConversationManager):
         summarization_system_prompt: str | None = None,
         *,
         pin_first: int | None = None,
-        proactive_compression: bool | ProactiveCompressionConfig | None = DEFAULT_PROACTIVE_COMPRESSION,
+        proactive_compression: bool
+        | ProactiveCompressionConfig
+        | None = DEFAULT_PROACTIVE_COMPRESSION,
         **kwargs: object,
     ) -> None:
-        """Initialize the default summarizing conversation manager."""
+        """Initialize a summarizing conversation manager with event support."""
 
         if isinstance(proactive_compression, dict):
             proactive_compression = deepcopy(proactive_compression)
@@ -164,15 +167,15 @@ def clone_conversation_manager(
     """Clone a conversation manager with the smallest practical cost.
 
     Args:
-        conversation_manager: Caller-provided custom manager; falls back to the
-            default summarizing manager when omitted.
+        conversation_manager: Caller-provided custom manager. An omitted manager
+            creates a no-op manager that preserves the full conversation.
 
     Returns:
         A conversation manager instance ready for the current session.
     """
 
     if conversation_manager is None:
-        return EventingSummarizingConversationManager()
+        return NullConversationManager()
 
     try:
         return deepcopy(conversation_manager)

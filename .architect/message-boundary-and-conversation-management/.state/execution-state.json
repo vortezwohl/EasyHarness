@@ -1,0 +1,29 @@
+{
+  "current_task": null,
+  "functional_boundary_decisions": [],
+  "impact_scope_adaptations": [],
+  "plan_digest": "2097ea09422859fb3a7a0d4516e93839fcffc09c10b401b0ef7be07b8cfd6f1c",
+  "tasks": {
+    "T-001": {
+      "recorded_execution_results": [
+        "2026-07-28: Focused permissive and rejection adapter tests passed.",
+        "2026-07-28: runtime.py and tests/test_sdk.py passed py_compile, Ruff check, and Ruff format check."
+      ],
+      "state": "completed"
+    },
+    "T-002": {
+      "recorded_execution_results": [
+        "2026-07-28: Direct adapter and conversation-manager contract checks passed.",
+        "2026-07-28: Omitted manager creates NullConversationManager; specified root exports are available."
+      ],
+      "state": "completed"
+    },
+    "T-003": {
+      "recorded_execution_results": [
+        "2026-07-28: Ruff check, Ruff format check, and py_compile passed for all touched Python files.",
+        "2026-07-28: Full tests.test_sdk ran 46 tests with one pre-existing ToolContext assertion failure; 45 tests passed."
+      ],
+      "state": "completed"
+    }
+  }
+}

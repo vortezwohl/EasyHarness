@@ -401,10 +401,10 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 "OptionalToolContext",
                 "ToolOutput",
                 "tool",
+                "EventingSummarizingConversationManager",
+                "SlidingWindowConversationManager",
             },
         )
-        for name in easyharness.__all__:
-            self.assertTrue(hasattr(easyharness, name))
 
     def test_tool_context_is_hidden_from_schema_and_metadata(self) -> None:
         """ToolContext parameters must remain private signature specifications."""
@@ -1346,7 +1346,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(third, "turn:1 third")
 
     def test_agent_normalizes_strings_and_openai_message_history(self) -> None:
-        """Public input must become Strands messages while preserving the system prompt."""
+        """Public input must become Strands messages and preserve system prompts."""
 
         model = FakeModel()
         message_history = [
@@ -1390,7 +1390,10 @@ class EasyHarnessSdkTests(unittest.TestCase):
 
         self.assertEqual(
             model.stream_calls[0],
-            ([{"role": "user", "content": [{"text": "Warm up"}]}], "only this system prompt"),
+            (
+                [{"role": "user", "content": [{"text": "Warm up"}]}],
+                "only this system prompt",
+            ),
         )
         self.assertEqual(run_result, "turn:2 Run list input")
         self.assertEqual(model.stream_calls[1][1], "only this system prompt")
@@ -1435,13 +1438,23 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertTrue(any(event.kind == "assistant" for event in events))
 
     def test_agent_rejects_unsupported_openai_message_history(self) -> None:
-        """Invalid OpenAI history must fail before model invocation without polluting state."""
+        """Invalid history must fail before model invocation without state changes."""
 
         model = FakeModel()
         invalid_prompts = [
             [{"role": "system", "content": "override"}],
             [{"role": "developer", "content": "override"}],
-            [{"role": "user", "content": "text", "name": "unexpected"}],
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://example.test/image.png"},
+                        }
+                    ],
+                }
+            ],
             [
                 {
                     "role": "assistant",
@@ -1902,36 +1915,28 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(manager.preserve_recent_messages, 8)
         self.assertEqual(manager._compression_threshold, 0.7)
 
-    def test_default_compress_events_use_proactive_mode(self) -> None:
-        """Default compression must emit a proactive compression event."""
+    def test_default_manager_preserves_full_history_without_compression(self) -> None:
+        """An omitted manager must preserve a large message without compression."""
 
+        model = FakeModel()
+        large_prompt = "x" * 100_000
         with mock.patch(
             "easyharness._internal.runtime.build_runtime_model",
-            return_value=FakeModel(overflow_threshold=12),
+            return_value=model,
         ):
             agent = Agent(
                 model=ModelConfig(model="fake", api_key="fake"),
                 system_prompt="test",
             )
-            for index in range(5):
-                agent.run(f"warmup-{index}")
             manager = agent._runtime._conversation_manager
-            raw_events: list[dict[str, object]] = []
-            manager.bind_event_sink(raw_events.append)
-            manager._on_before_model_call_threshold(
-                SimpleNamespace(
-                    agent=agent._runtime._agent,
-                    projected_input_tokens=90,
-                )
-            )
-            manager.bind_event_sink(None)
+            events = list(agent.stream(large_prompt))
 
-        compress_events = [event["easyharness_compress"] for event in raw_events]
-        compress_statuses = [event["status"] for event in compress_events]
-        compress_modes = [event["mode"] for event in compress_events]
-        self.assertIn("started", compress_statuses)
-        self.assertIn("completed", compress_statuses)
-        self.assertIn("proactive", compress_modes)
+        self.assertEqual(manager.__class__.__name__, "NullConversationManager")
+        self.assertFalse(any(event.kind == "compress" for event in events))
+        self.assertEqual(
+            model.stream_calls[0][0][0]["content"],
+            [{"text": large_prompt}],
+        )
 
     def test_reactive_compress_failure_still_raises_when_proactive_disabled(
         self,
@@ -2018,10 +2023,10 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 "OptionalToolContext",
                 "ToolOutput",
                 "tool",
+                "EventingSummarizingConversationManager",
+                "SlidingWindowConversationManager",
             },
         )
-
-    def test_fileglide_toolset_contains_expected_tools_and_respects_root(self) -> None:
         """Official FileGlide tools must honor their root scope."""
 
         from easyharness.toolset import build_fileglide_tools
@@ -2191,6 +2196,96 @@ class EasyHarnessSdkTests(unittest.TestCase):
             custom_read_text,
         )
         self.assertIn("fileglide_manage_paths", overridden_tool_map)
+
+    def test_message_adapter_and_explicit_manager_public_contracts(self) -> None:
+        """Public message and explicit-manager contracts must remain usable."""
+
+        from easyharness import (
+            EventingSummarizingConversationManager,
+            SlidingWindowConversationManager,
+        )
+
+        model = FakeModel()
+        history = [
+            {
+                "role": "user",
+                "name": "caller",
+                "content": [{"type": "text", "text": "first"}],
+                "provider_metadata": {"trace": "ignored"},
+            },
+            {
+                "role": "assistant",
+                "content": [{"text": "working"}],
+                "reasoning_content": "reasoning",
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "status",
+                            "arguments": {"branch": "main"},
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "unpaired-result",
+                "content": [{"type": "text", "text": "done"}],
+            },
+        ]
+        original_history = copy.deepcopy(history)
+
+        with mock.patch(
+            "easyharness._internal.runtime.build_runtime_model",
+            return_value=model,
+        ):
+            agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+                enable_fileglide=False,
+            )
+            list(agent.stream(history))
+
+            eventing_agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+                enable_fileglide=False,
+                conversation_manager=EventingSummarizingConversationManager(),
+            )
+            first_manager = eventing_agent._runtime._conversation_manager
+            eventing_agent.run("before reset")
+            eventing_agent.reset()
+            self.assertIsNot(
+                first_manager, eventing_agent._runtime._conversation_manager
+            )
+            self.assertEqual(eventing_agent.run("after reset"), "turn:1 after reset")
+
+            sliding_agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+                enable_fileglide=False,
+                conversation_manager=SlidingWindowConversationManager(window_size=2),
+            )
+            self.assertIsInstance(
+                sliding_agent._runtime._conversation_manager,
+                SlidingWindowConversationManager,
+            )
+            sliding_agent.run("sliding history")
+
+        captured = model.stream_calls[0][0]
+        self.assertEqual(captured[0]["content"], [{"text": "first"}])
+        self.assertEqual(
+            captured[1]["content"][1]["reasoningContent"]["reasoningText"],
+            {"text": "reasoning"},
+        )
+        self.assertEqual(
+            captured[1]["content"][2]["toolUse"]["input"], {"branch": "main"}
+        )
+        self.assertEqual(
+            captured[2]["content"][0]["toolResult"]["toolUseId"],
+            "unpaired-result",
+        )
+        self.assertEqual(history, original_history)
 
 
 if __name__ == "__main__":

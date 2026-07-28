@@ -221,19 +221,31 @@ model = ModelConfig(
 )
 ```
 
-The default conversation manager uses `summary_ratio=0.3`, `preserve_recent_messages=8`, and a 70% proactive-compression threshold. Pass a custom `conversation_manager` to change that policy; compression start, completion, and failure appear as `compress` events.
+By default, `Agent` preserves the full conversation history without compression or trimming. A real context-window overflow propagates to the caller. To opt into management, pass an explicit manager:
+
+```python
+from easyharness import EventingSummarizingConversationManager
+
+agent = Agent(
+    model=ModelConfig(model="gpt-5.4", api_key="YOUR_API_KEY"),
+    system_prompt="You are a concise assistant.",
+    conversation_manager=EventingSummarizingConversationManager(),
+)
+```
 
 ## Public API
 
-The root package deliberately exposes only eight names:
+The root package deliberately exposes ten names:
 
 ```python
 from easyharness import (
     Agent,
     AgentBusyError,
     AgentEvent,
+    EventingSummarizingConversationManager,
     ModelConfig,
     OptionalToolContext,
+    SlidingWindowConversationManager,
     ToolContext,
     ToolOutput,
     tool,

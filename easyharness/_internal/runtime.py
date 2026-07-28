@@ -13,9 +13,11 @@ import json
 import queue
 import threading
 import time
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterator, Mapping, cast
+from typing import Iterator, cast
 
 from strands import Agent as StrandsAgent
 from strands.agent.conversation_manager import ConversationManager
@@ -35,7 +37,7 @@ from easyharness._internal.types import (
 )
 
 _STREAM_END = object()
-PromptInput = str | list[dict[str, object]]
+PromptInput = str | list[Mapping[str, object]]
 
 
 def _tool_public_name(tool_obj: object) -> str:
@@ -103,166 +105,185 @@ def _extract_message_text(message: Message | None) -> str:
 
 
 def _normalize_prompt(prompt: PromptInput) -> Messages:
-    """Convert public input strictly to Strands internal message format.
+    """Convert supported public input into Strands message objects.
 
-    This adapter accepts strings and the supported text/function-tool subset of
-    OpenAI Chat Completions history, so the underlying Strands Agent always
-    receives ``Messages``. System prompts belong to Agent construction; input
-    ``system`` and ``developer`` messages must therefore fail instead of being
-    silently ignored or merged.
+    The adapter accepts plain text and the text/function-tool subset of OpenAI
+    Chat Completions history. Input system and developer messages remain
+    invalid because system_prompt belongs to Agent construction.
+
+    Optional provider metadata is ignored. Content that cannot be represented
+    as Strands text or tool blocks fails explicitly instead of being discarded.
 
     Args:
-        prompt: A single user text message or supported OpenAI Chat Completions
-            message history.
+        prompt: A single user message or a list of OpenAI-style messages.
 
     Returns:
-        A new Strands message list without mutating caller-provided objects.
+        New Strands Messages without mutating caller-provided input.
 
     Raises:
-        ValueError: The role, fields, text content, or function-call structure
-            is outside the supported strict subset.
+        ValueError: The input contains an unsupported role or non-representable
+            core message data.
     """
 
     def fail(index: int, field: str, reason: str) -> None:
         raise ValueError(f"Message at index {index} has invalid {field}: {reason}")
 
-    def reject_unknown_fields(
-        message: dict[str, object],
+    def text_blocks(
+        value: object,
         index: int,
-        allowed_fields: set[str],
-    ) -> None:
-        unknown_fields = sorted(str(field) for field in set(message) - allowed_fields)
-        if unknown_fields:
-            fail(index, "message", f"unsupported fields: {', '.join(unknown_fields)}")
+        field: str,
+    ) -> list[dict[str, object]]:
+        if isinstance(value, str):
+            return [{"text": value}]
+        if not isinstance(value, list):
+            fail(index, field, "must be str or a list of text parts")
+
+        blocks: list[dict[str, object]] = []
+        for part_index, raw_part in enumerate(value):
+            part_field = f"{field}[{part_index}]"
+            if not isinstance(raw_part, Mapping):
+                fail(index, part_field, "must be a mapping")
+
+            part_type = raw_part.get("type")
+            text = raw_part.get("text")
+            if part_type not in (None, "text") or not isinstance(text, str):
+                fail(index, part_field, "must be a text part")
+            blocks.append({"text": text})
+        return blocks
+
+    def tool_input(
+        value: object,
+        index: int,
+        field: str,
+    ) -> dict[str, object]:
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                fail(index, field, "must be valid JSON object")
+            if not isinstance(decoded, dict):
+                fail(index, field, "must decode to a JSON object")
+            return deepcopy(decoded)
+
+        if isinstance(value, Mapping):
+            return deepcopy(dict(value))
+
+        fail(index, field, "must be a JSON object string or mapping")
 
     if isinstance(prompt, str):
         return [{"role": "user", "content": [{"text": prompt}]}]
     if not isinstance(prompt, list):
-        raise ValueError("prompt must be str or list[dict]")
+        raise ValueError("prompt must be str or list of message mappings")
 
     messages: Messages = []
     for message_index, raw_message in enumerate(prompt):
-        if not isinstance(raw_message, dict):
-            fail(message_index, "message", "must be a dict")
+        if not isinstance(raw_message, Mapping):
+            fail(message_index, "message", "must be a mapping")
 
         role = raw_message.get("role")
+        if not isinstance(role, str):
+            fail(message_index, "role", "must be a str")
         if role in {"system", "developer"}:
-            fail(message_index, "role", "cannot override or supplement system_prompt")
-        if role == "user":
-            reject_unknown_fields(raw_message, message_index, {"role", "content"})
-            content = raw_message.get("content")
-            if not isinstance(content, str):
-                fail(message_index, "content", "user message must be str")
-            messages.append({"role": "user", "content": [{"text": content}]})
-            continue
-        if role == "assistant":
-            reject_unknown_fields(
-                raw_message,
+            fail(
                 message_index,
-                {"role", "content", "tool_calls"},
+                "role",
+                "cannot override or supplement system_prompt",
             )
-            content = raw_message.get("content")
-            if content is not None and not isinstance(content, str):
-                fail(message_index, "content", "assistant message must be str or None")
 
-            blocks: list[dict[str, object]] = []
-            if isinstance(content, str):
-                blocks.append({"text": content})
+        if role == "user":
+            messages.append(
+                {
+                    "role": "user",
+                    "content": text_blocks(
+                        raw_message.get("content"),
+                        message_index,
+                        "content",
+                    ),
+                }
+            )
+            continue
+
+        if role == "assistant":
+            content = raw_message.get("content")
+            if content is None:
+                blocks: list[dict[str, object]] = []
+            else:
+                blocks = text_blocks(content, message_index, "content")
+
+            reasoning_content = raw_message.get("reasoning_content")
+            if isinstance(reasoning_content, str):
+                blocks.append(
+                    {
+                        "reasoningContent": {
+                            "reasoningText": {"text": reasoning_content},
+                        }
+                    }
+                )
 
             tool_calls = raw_message.get("tool_calls")
             if tool_calls is not None:
-                if not isinstance(tool_calls, list) or not tool_calls:
-                    fail(message_index, "tool_calls", "must be a non-empty list")
+                if not isinstance(tool_calls, list):
+                    fail(message_index, "tool_calls", "must be a list")
                 for call_index, raw_call in enumerate(tool_calls):
                     call_path = f"tool_calls[{call_index}]"
-                    if not isinstance(raw_call, dict):
-                        fail(message_index, call_path, "must be a dict")
-                    unknown_call_fields = sorted(
-                        str(field)
-                        for field in set(raw_call) - {"id", "type", "function"}
-                    )
-                    if unknown_call_fields:
-                        fail(
-                            message_index,
-                            call_path,
-                            f"unsupported fields: {', '.join(unknown_call_fields)}",
-                        )
+                    if not isinstance(raw_call, Mapping):
+                        fail(message_index, call_path, "must be a mapping")
+
+                    call_type = raw_call.get("type")
+                    if call_type is not None and call_type != "function":
+                        fail(message_index, f"{call_path}.type", "must be function")
 
                     tool_use_id = raw_call.get("id")
-                    call_type = raw_call.get("type")
                     function = raw_call.get("function")
                     if not isinstance(tool_use_id, str) or not tool_use_id:
-                        fail(message_index, f"{call_path}.id", "must be a non-empty str")
-                    if call_type != "function":
-                        fail(message_index, f"{call_path}.type", "must be function")
-                    if not isinstance(function, dict):
-                        fail(message_index, f"{call_path}.function", "must be a dict")
-
-                    unknown_function_fields = sorted(
-                        str(field)
-                        for field in set(function) - {"name", "arguments"}
-                    )
-                    if unknown_function_fields:
+                        fail(
+                            message_index,
+                            f"{call_path}.id",
+                            "must be a non-empty str",
+                        )
+                    if not isinstance(function, Mapping):
                         fail(
                             message_index,
                             f"{call_path}.function",
-                            f"unsupported fields: {', '.join(unknown_function_fields)}",
+                            "must be a mapping",
                         )
 
                     name = function.get("name")
-                    arguments = function.get("arguments")
                     if not isinstance(name, str) or not name:
                         fail(
                             message_index,
                             f"{call_path}.function.name",
                             "must be a non-empty str",
                         )
-                    if not isinstance(arguments, str):
-                        fail(
-                            message_index,
-                            f"{call_path}.function.arguments",
-                            "must be a JSON object string",
-                        )
-                    try:
-                        tool_input = json.loads(arguments)
-                    except json.JSONDecodeError:
-                        fail(
-                            message_index,
-                            f"{call_path}.function.arguments",
-                            "must be valid JSON object",
-                        )
-                    if not isinstance(tool_input, dict):
-                        fail(
-                            message_index,
-                            f"{call_path}.function.arguments",
-                            "must decode to a JSON object",
-                        )
                     blocks.append(
                         {
                             "toolUse": {
                                 "toolUseId": tool_use_id,
                                 "name": name,
-                                "input": tool_input,
+                                "input": tool_input(
+                                    function.get("arguments"),
+                                    message_index,
+                                    f"{call_path}.function.arguments",
+                                ),
                             }
                         }
                     )
 
             if not blocks:
-                fail(message_index, "message", "assistant message must include content or tool_calls")
+                fail(
+                    message_index,
+                    "message",
+                    "assistant message must include representable content",
+                )
             messages.append({"role": "assistant", "content": blocks})
             continue
+
         if role == "tool":
-            reject_unknown_fields(
-                raw_message,
-                message_index,
-                {"role", "tool_call_id", "content"},
-            )
             tool_use_id = raw_message.get("tool_call_id")
-            content = raw_message.get("content")
             if not isinstance(tool_use_id, str) or not tool_use_id:
                 fail(message_index, "tool_call_id", "must be a non-empty str")
-            if not isinstance(content, str):
-                fail(message_index, "content", "tool message must be str")
+
+            status = "error" if raw_message.get("status") == "error" else "success"
             messages.append(
                 {
                     "role": "user",
@@ -270,8 +291,12 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
                         {
                             "toolResult": {
                                 "toolUseId": tool_use_id,
-                                "status": "success",
-                                "content": [{"text": content}],
+                                "status": status,
+                                "content": text_blocks(
+                                    raw_message.get("content"),
+                                    message_index,
+                                    "content",
+                                ),
                             }
                         }
                     ],
@@ -418,11 +443,7 @@ class _EventMapper:
             if tool_event is not None
             else None
         )
-        tracked = (
-            self._active_tools.pop(tool_use_id)
-            if tool_use_id is not None
-            else None
-        )
+        tracked = self._active_tools.pop(tool_use_id) if tool_use_id is not None else None
         if tracked is None and tool_event is None:
             return
 
@@ -441,16 +462,8 @@ class _EventMapper:
             if tracked is not None
             else cast(str | None, tool_event.get("name"))
         )
-        public_tool_use_id = (
-            tracked.tool_use_id
-            if tracked is not None
-            else tool_use_id
-        )
-        tool_input = (
-            tracked.tool_input
-            if tracked is not None
-            else tool_event.get("input")
-        )
+        public_tool_use_id = tracked.tool_use_id if tracked is not None else tool_use_id
+        tool_input = tracked.tool_input if tracked is not None else tool_event.get("input")
         output = tool_event.get("output") if tool_event is not None else None
 
         self._emit(
@@ -768,7 +781,9 @@ class _StrandsRuntime:
             bind_event_sink_if_supported(self._conversation_manager, None)
             self._end_invocation()
 
-    def stream(self, prompt: PromptInput, **tool_contexts: object) -> Iterator[AgentEvent]:
+    def stream(
+        self, prompt: PromptInput, **tool_contexts: object
+    ) -> Iterator[AgentEvent]:
         """Return the public event stream as a synchronous generator.
 
         Args:
@@ -835,8 +850,8 @@ class Agent:
         system_prompt: System prompt used by the current session.
         tools: Tools available to the current agent.
         enable_fileglide: Whether to auto-load the official fileglide toolset.
-        conversation_manager: Optional custom conversation manager. The default
-            summarizing manager is used when omitted.
+        conversation_manager: Optional custom conversation manager. When omitted,
+            the session preserves its full history without automatic management.
     """
 
     def __init__(
@@ -872,7 +887,9 @@ class Agent:
 
         return self._runtime.run(prompt, **tool_contexts)
 
-    def stream(self, prompt: PromptInput, **tool_contexts: object) -> Iterator[AgentEvent]:
+    def stream(
+        self, prompt: PromptInput, **tool_contexts: object
+    ) -> Iterator[AgentEvent]:
         """Run one turn and return the unified event stream.
 
         Args:

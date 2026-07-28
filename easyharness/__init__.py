@@ -1,10 +1,13 @@
 """Minimal public SDK surface for EasyHarness.
 
 The package exports Agent, AgentBusyError, ModelConfig, AgentEvent, ToolContext,
-OptionalToolContext, ToolOutput, and tool. Runtime bridging, tool contract
-validation, event mapping, and conversation compression remain in private modules.
+OptionalToolContext, ToolOutput, tool, and two explicit conversation managers.
+Runtime bridging, tool contract validation, and event mapping remain private.
 """
 
+from strands.agent.conversation_manager import SlidingWindowConversationManager
+
+from ._internal.conversation import EventingSummarizingConversationManager
 from ._internal.runtime import Agent
 from ._internal.tools import tool
 from ._internal.types import (
@@ -25,6 +28,8 @@ __all__ = [
     "OptionalToolContext",
     "ToolOutput",
     "tool",
+    "EventingSummarizingConversationManager",
+    "SlidingWindowConversationManager",
 ]
 
 __AUTHOR__ = "吴子豪 / Vortez Wohl"
