@@ -53,9 +53,7 @@ class EventingSummarizingConversationManager(SummarizingConversationManager):
         summarization_system_prompt: str | None = None,
         *,
         pin_first: int | None = None,
-        proactive_compression: bool | ProactiveCompressionConfig | None = (
-            DEFAULT_PROACTIVE_COMPRESSION
-        ),
+        proactive_compression: bool | ProactiveCompressionConfig | None = DEFAULT_PROACTIVE_COMPRESSION,
         **kwargs: object,
     ) -> None:
         """Initialize the default summarizing conversation manager."""
