@@ -42,7 +42,7 @@ EasyHarness keeps those concerns in a small Python SDK. It is built for coding a
 | A tool is only a function, so the model does not know when to use it or how it fails. | `@tool` requires purpose, invocation guidance, parameter descriptions, return semantics, and common failures. |
 | A product can only guess what an agent is doing. | `stream()` emits unified thinking, tool, assistant, compression, and system events. |
 | Filesystem access is enabled without a legible boundary. | The official FileGlide toolset supports a default root and an explicit root per call. |
-| Long sessions fail only after the model context overflows. | The default manager proactively compresses at 70% of the context window and reports the result as an event. |
+| Long sessions can overflow a model context window. | By default, `Agent` preserves the full history without compression or trimming; pass a conversation manager when automatic management is required. |
 
 ## Quick Start
 
@@ -84,7 +84,7 @@ This is the complete first loop: create a session-oriented agent, load filesyste
 | Observable events | One event vocabulary: `thinking`, `tool`, `assistant`, `compress`, and `system`. |
 | Explicit session control | `cancel()` cooperatively stops the active call, `reset()` clears session history, and re-entry raises `AgentBusyError`. |
 | Scoped file operations | Seven FileGlide tools cover listing, search, reading, editing, path management, and inspection. |
-| Proactive compression | The default manager compresses at 70% of the context window, keeps eight recent messages, and emits its outcome. |
+| Optional conversation management | By default, the agent does not compress or trim. Pass `EventingSummarizingConversationManager` to summarize or `SlidingWindowConversationManager` to trim with a caller-selected policy. |
 | OpenAI-compatible models | Supply a model ID, API key, `base_url`, sampling parameters, and a context-window override. A DeepSeek-compatible path preserves tool-call reasoning. |
 
 ## Common Patterns
@@ -221,7 +221,7 @@ model = ModelConfig(
 )
 ```
 
-By default, `Agent` preserves the full conversation history without compression or trimming. A real context-window overflow propagates to the caller. To opt into management, pass an explicit manager:
+By default, `Agent` appends each input and generated reply to its session history without compression or trimming. A real context-window overflow propagates to the caller. To opt into automatic management, pass an explicit manager:
 
 ```python
 from easyharness import EventingSummarizingConversationManager
@@ -231,6 +231,14 @@ agent = Agent(
     system_prompt="You are a concise assistant.",
     conversation_manager=EventingSummarizingConversationManager(),
 )
+```
+
+When an application owns a complete OpenAI-style history, rebuild that history for each turn, call `reset()`, then pass the complete list. List input is appended to the current session, so passing the same complete history without resetting duplicates context.
+
+```python
+history = build_complete_history_for_next_turn()
+agent.reset()
+answer = agent.run(history)
 ```
 
 ## Public API
