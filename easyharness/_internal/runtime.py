@@ -9,6 +9,7 @@ objects.
 from __future__ import annotations
 
 import asyncio
+import json
 import queue
 import threading
 import time
@@ -18,7 +19,7 @@ from typing import Iterator, Mapping, cast
 
 from strands import Agent as StrandsAgent
 from strands.agent.conversation_manager import ConversationManager
-from strands.types.content import Message
+from strands.types.content import Message, Messages
 
 from easyharness._internal.conversation import (
     bind_event_sink_if_supported,
@@ -34,6 +35,7 @@ from easyharness._internal.types import (
 )
 
 _STREAM_END = object()
+PromptInput = str | list[dict[str, object]]
 
 
 def _tool_public_name(tool_obj: object) -> str:
@@ -98,6 +100,186 @@ def _extract_message_text(message: Message | None) -> str:
                 if "text" in item and item["text"]:
                     chunks.append(item["text"])
     return "\n".join(chunks).strip()
+
+
+def _normalize_prompt(prompt: PromptInput) -> Messages:
+    """将公开输入严格转换为 Strands 内部消息格式。
+
+    字符串和 OpenAI Chat Completions 的文本/function-tool 历史在这里统一
+    适配，确保底层 Strands Agent 永远只接收 ``Messages``。系统提示属于
+    Agent 构造参数，故输入列表中的 ``system`` 与 ``developer`` 必须失败，
+    不能被静默忽略或合并。
+
+    Args:
+        prompt: 单条用户文本，或允许的 OpenAI Chat Completions 消息列表。
+
+    Returns:
+        新建的 Strands 消息列表，不会修改调用方提供的对象。
+
+    Raises:
+        ValueError: 输入角色、字段、文本内容或函数调用结构不符合已支持的
+            严格子集时抛出。
+    """
+
+    def fail(index: int, field: str, reason: str) -> None:
+        raise ValueError(f"消息索引 {index} 的字段 {field} 无效: {reason}")
+
+    def reject_unknown_fields(
+        message: dict[str, object],
+        index: int,
+        allowed_fields: set[str],
+    ) -> None:
+        unknown_fields = sorted(str(field) for field in set(message) - allowed_fields)
+        if unknown_fields:
+            fail(index, "message", f"不支持字段 {', '.join(unknown_fields)}")
+
+    if isinstance(prompt, str):
+        return [{"role": "user", "content": [{"text": prompt}]}]
+    if not isinstance(prompt, list):
+        raise ValueError("prompt 必须是 str 或 list[dict]")
+
+    messages: Messages = []
+    for message_index, raw_message in enumerate(prompt):
+        if not isinstance(raw_message, dict):
+            fail(message_index, "message", "必须是 dict")
+
+        role = raw_message.get("role")
+        if role in {"system", "developer"}:
+            fail(message_index, "role", "不允许覆盖或补充 system_prompt")
+        if role == "user":
+            reject_unknown_fields(raw_message, message_index, {"role", "content"})
+            content = raw_message.get("content")
+            if not isinstance(content, str):
+                fail(message_index, "content", "user 消息必须是 str")
+            messages.append({"role": "user", "content": [{"text": content}]})
+            continue
+        if role == "assistant":
+            reject_unknown_fields(
+                raw_message,
+                message_index,
+                {"role", "content", "tool_calls"},
+            )
+            content = raw_message.get("content")
+            if content is not None and not isinstance(content, str):
+                fail(message_index, "content", "assistant 消息必须是 str 或 None")
+
+            blocks: list[dict[str, object]] = []
+            if isinstance(content, str):
+                blocks.append({"text": content})
+
+            tool_calls = raw_message.get("tool_calls")
+            if tool_calls is not None:
+                if not isinstance(tool_calls, list) or not tool_calls:
+                    fail(message_index, "tool_calls", "必须是非空 list")
+                for call_index, raw_call in enumerate(tool_calls):
+                    call_path = f"tool_calls[{call_index}]"
+                    if not isinstance(raw_call, dict):
+                        fail(message_index, call_path, "必须是 dict")
+                    unknown_call_fields = sorted(
+                        str(field)
+                        for field in set(raw_call) - {"id", "type", "function"}
+                    )
+                    if unknown_call_fields:
+                        fail(
+                            message_index,
+                            call_path,
+                            f"不支持字段 {', '.join(unknown_call_fields)}",
+                        )
+
+                    tool_use_id = raw_call.get("id")
+                    call_type = raw_call.get("type")
+                    function = raw_call.get("function")
+                    if not isinstance(tool_use_id, str) or not tool_use_id:
+                        fail(message_index, f"{call_path}.id", "必须是非空 str")
+                    if call_type != "function":
+                        fail(message_index, f"{call_path}.type", "必须为 function")
+                    if not isinstance(function, dict):
+                        fail(message_index, f"{call_path}.function", "必须是 dict")
+
+                    unknown_function_fields = sorted(
+                        str(field)
+                        for field in set(function) - {"name", "arguments"}
+                    )
+                    if unknown_function_fields:
+                        fail(
+                            message_index,
+                            f"{call_path}.function",
+                            f"不支持字段 {', '.join(unknown_function_fields)}",
+                        )
+
+                    name = function.get("name")
+                    arguments = function.get("arguments")
+                    if not isinstance(name, str) or not name:
+                        fail(
+                            message_index,
+                            f"{call_path}.function.name",
+                            "必须是非空 str",
+                        )
+                    if not isinstance(arguments, str):
+                        fail(
+                            message_index,
+                            f"{call_path}.function.arguments",
+                            "必须是 JSON object 字符串",
+                        )
+                    try:
+                        tool_input = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        fail(
+                            message_index,
+                            f"{call_path}.function.arguments",
+                            "必须是有效 JSON object",
+                        )
+                    if not isinstance(tool_input, dict):
+                        fail(
+                            message_index,
+                            f"{call_path}.function.arguments",
+                            "必须解码为 JSON object",
+                        )
+                    blocks.append(
+                        {
+                            "toolUse": {
+                                "toolUseId": tool_use_id,
+                                "name": name,
+                                "input": tool_input,
+                            }
+                        }
+                    )
+
+            if not blocks:
+                fail(message_index, "message", "assistant 消息必须包含 content 或 tool_calls")
+            messages.append({"role": "assistant", "content": blocks})
+            continue
+        if role == "tool":
+            reject_unknown_fields(
+                raw_message,
+                message_index,
+                {"role", "tool_call_id", "content"},
+            )
+            tool_use_id = raw_message.get("tool_call_id")
+            content = raw_message.get("content")
+            if not isinstance(tool_use_id, str) or not tool_use_id:
+                fail(message_index, "tool_call_id", "必须是非空 str")
+            if not isinstance(content, str):
+                fail(message_index, "content", "tool 消息必须是 str")
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "toolResult": {
+                                "toolUseId": tool_use_id,
+                                "status": "success",
+                                "content": [{"text": content}],
+                            }
+                        }
+                    ],
+                }
+            )
+            continue
+
+        fail(message_index, "role", "仅支持 user、assistant 或 tool")
+
+    return messages
 
 
 @dataclass(slots=True)
@@ -559,11 +741,12 @@ class _StrandsRuntime:
                 raise AgentBusyError("Agent cannot reset while an invocation is active")
             self._agent = self._create_agent()
 
-    def run(self, prompt: str, **tool_contexts: object) -> str:
+    def run(self, prompt: PromptInput, **tool_contexts: object) -> str:
         """Run one synchronous session turn and return the final text.
 
         Args:
-            prompt: User input for the current turn.
+            prompt: 用户文本，或 OpenAI Chat Completions 文本/function-tool
+                消息列表。
 
         Returns:
             Final assistant text for the current turn.
@@ -572,9 +755,10 @@ class _StrandsRuntime:
         self._begin_invocation()
         try:
             invocation_state = self._invocation_state(tool_contexts)
+            messages = _normalize_prompt(prompt)
             bind_event_sink_if_supported(self._conversation_manager, None)
             result = self._agent(
-                prompt,
+                messages,
                 invocation_state=invocation_state,
             )
             return str(result).strip()
@@ -582,11 +766,12 @@ class _StrandsRuntime:
             bind_event_sink_if_supported(self._conversation_manager, None)
             self._end_invocation()
 
-    def stream(self, prompt: str, **tool_contexts: object) -> Iterator[AgentEvent]:
+    def stream(self, prompt: PromptInput, **tool_contexts: object) -> Iterator[AgentEvent]:
         """Return the public event stream as a synchronous generator.
 
         Args:
-            prompt: User input for the current turn.
+            prompt: 用户文本，或 OpenAI Chat Completions 文本/function-tool
+                消息列表。
 
         Yields:
             Unified `AgentEvent` objects.
@@ -595,6 +780,7 @@ class _StrandsRuntime:
         self._begin_invocation()
         try:
             invocation_state = self._invocation_state(tool_contexts)
+            messages = _normalize_prompt(prompt)
             output_queue: "queue.Queue[object]" = queue.Queue()
 
             def worker() -> None:
@@ -607,7 +793,7 @@ class _StrandsRuntime:
                     )
                     try:
                         async for raw_event in self._agent.stream_async(
-                            prompt,
+                            messages,
                             invocation_state=invocation_state,
                         ):
                             mapper.feed(raw_event)
@@ -671,11 +857,12 @@ class Agent:
             conversation_manager=conversation_manager,
         )
 
-    def run(self, prompt: str, **tool_contexts: object) -> str:
+    def run(self, prompt: PromptInput, **tool_contexts: object) -> str:
         """Run one turn and return the final text result.
 
         Args:
-            prompt: User input for the current turn.
+            prompt: 用户文本，或 OpenAI Chat Completions 文本/function-tool
+                消息列表。
 
         Returns:
             Final assistant text output.
@@ -683,11 +870,12 @@ class Agent:
 
         return self._runtime.run(prompt, **tool_contexts)
 
-    def stream(self, prompt: str, **tool_contexts: object) -> Iterator[AgentEvent]:
+    def stream(self, prompt: PromptInput, **tool_contexts: object) -> Iterator[AgentEvent]:
         """Run one turn and return the unified event stream.
 
         Args:
-            prompt: User input for the current turn.
+            prompt: 用户文本，或 OpenAI Chat Completions 文本/function-tool
+                消息列表。
 
         Yields:
             Unified `AgentEvent` objects.

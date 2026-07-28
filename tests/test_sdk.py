@@ -97,6 +97,7 @@ class FakeModel(Model):
         self._config = {"context_window_limit": 128}
         self._overflow_threshold = overflow_threshold
         self._fail_summary = fail_summary
+        self.stream_calls: list[tuple[Messages, str | None]] = []
 
     def update_config(self, **model_config: object) -> None:
         """Update test configuration."""
@@ -274,6 +275,7 @@ class FakeModel(Model):
     ) -> AsyncGenerator[StreamEvent, None]:
         """Return a minimal streaming event sequence based on input messages."""
 
+        self.stream_calls.append((copy.deepcopy(messages), system_prompt))
         del tool_specs, tool_choice, system_prompt_content, invocation_state, kwargs
 
         async def generator() -> AsyncGenerator[StreamEvent, None]:
@@ -1342,6 +1344,150 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(first, "turn:1 first")
         self.assertEqual(second, "turn:2 second")
         self.assertEqual(third, "turn:1 third")
+
+    def test_agent_normalizes_strings_and_openai_message_history(self) -> None:
+        """公开输入必须在进入模型前转换为 Strands 消息且保留系统提示。"""
+
+        model = FakeModel()
+        message_history = [
+            {"role": "user", "content": "查询状态"},
+            {
+                "role": "assistant",
+                "content": "我会查询。",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_status",
+                            "arguments": '{"branch": "main"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "content": "passed",
+            },
+            {"role": "user", "content": "继续"},
+        ]
+        original_history = copy.deepcopy(message_history)
+
+        with mock.patch(
+            "easyharness._internal.runtime.build_runtime_model",
+            return_value=model,
+        ):
+            agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="only this system prompt",
+                enable_fileglide=False,
+            )
+            agent.run("预热")
+            run_result = agent.run([{"role": "user", "content": "run 列表输入"}])
+            agent.reset()
+            events = list(agent.stream(message_history))
+
+        self.assertEqual(
+            model.stream_calls[0],
+            ([{"role": "user", "content": [{"text": "预热"}]}], "only this system prompt"),
+        )
+        self.assertEqual(run_result, "turn:2 run 列表输入")
+        self.assertEqual(model.stream_calls[1][1], "only this system prompt")
+        self.assertEqual(
+            model.stream_calls[1][0][-1:],
+            [{"role": "user", "content": [{"text": "run 列表输入"}]}],
+        )
+        self.assertEqual(model.stream_calls[-1][1], "only this system prompt")
+        self.assertEqual(
+            model.stream_calls[-1][0][-4:],
+            [
+                {"role": "user", "content": [{"text": "查询状态"}]},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"text": "我会查询。"},
+                        {
+                            "toolUse": {
+                                "toolUseId": "call-1",
+                                "name": "get_status",
+                                "input": {"branch": "main"},
+                            }
+                        },
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "toolResult": {
+                                "toolUseId": "call-1",
+                                "status": "success",
+                                "content": [{"text": "passed"}],
+                            }
+                        }
+                    ],
+                },
+                {"role": "user", "content": [{"text": "继续"}]},
+            ],
+        )
+        self.assertEqual(message_history, original_history)
+        self.assertTrue(any(event.kind == "assistant" for event in events))
+
+    def test_agent_rejects_unsupported_openai_message_history(self) -> None:
+        """系统角色和非法 OpenAI 历史必须在模型调用前失败且不污染会话。"""
+
+        model = FakeModel()
+        invalid_prompts = [
+            [{"role": "system", "content": "override"}],
+            [{"role": "developer", "content": "override"}],
+            [{"role": "user", "content": "text", "name": "unexpected"}],
+            [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {"name": "tool", "arguments": "not-json"},
+                        }
+                    ],
+                }
+            ],
+            [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {"name": "tool", "arguments": "[]"},
+                        }
+                    ],
+                }
+            ],
+        ]
+
+        with mock.patch(
+            "easyharness._internal.runtime.build_runtime_model",
+            return_value=model,
+        ):
+            agent = Agent(
+                model=ModelConfig(model="fake", api_key="fake"),
+                system_prompt="test",
+                enable_fileglide=False,
+            )
+            for prompt in invalid_prompts:
+                with self.assertRaisesRegex(ValueError, "消息索引 0"):
+                    agent.run(prompt)
+            with self.assertRaisesRegex(ValueError, "消息索引 0"):
+                list(agent.stream(invalid_prompts[0]))
+            result = agent.run("仍可调用")
+
+        self.assertEqual(len(model.stream_calls), 1)
+        self.assertEqual(result, "turn:1 仍可调用")
 
     def test_agent_cancel_is_noop_while_idle(self) -> None:
         """Calling cancel while idle must not affect a later invocation."""

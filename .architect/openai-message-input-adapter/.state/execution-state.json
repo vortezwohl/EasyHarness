@@ -1,0 +1,24 @@
+{
+  "current_task": null,
+  "functional_boundary_decisions": [],
+  "impact_scope_adaptations": [],
+  "plan_digest": "1431a3f9605982ed0032080c938eecef4b8ff97ca70636e987708ce0dd359c49",
+  "tasks": {
+    "T-001": {
+      "recorded_execution_results": [
+        "2026-07-28: 在 easyharness/_internal/runtime.py 实现共享的严格输入规范化 Adapter，并接入 public/private run 与 stream。",
+        "2026-07-28: 已通过 python -m compileall easyharness、运行时导入检查和 git diff --check。"
+      ],
+      "state": "completed"
+    },
+    "T-002": {
+      "recorded_execution_results": [
+        "2026-07-28: 新增字符串、OpenAI 文本/function-tool 历史、错误路径、输入不变和失败后复用的无网络回归；更新 README。",
+        "2026-07-28: 新增两项输入适配测试通过；python -m compileall easyharness tests、git diff --check、计划 validate_plan.py 和 UTF-8 无 BOM 检查通过。",
+        "2026-07-28: python -m unittest tests.test_sdk 运行 47 项，其中现有 ToolContext 深层 payload 断言失败 1 项；ruff 未安装，未能执行 Ruff。",
+        "2026-07-28: 完成审计补充了成功 Agent.run(list[dict]) 的直接回归；两项适配器测试通过，完整 SDK 套件稳定复现同一未修改 ToolContext 失败。"
+      ],
+      "state": "completed"
+    }
+  }
+}
