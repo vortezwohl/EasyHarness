@@ -15,6 +15,10 @@ dependencies = [
     "strands-agents-tools>=0.8.2",
     "strands-agents[litellm]>=1.45.0",
     "fileglide>=0.0.1",
+]
+
+[dependency-groups]
+dev = [
     "ruff",
 ]
 
