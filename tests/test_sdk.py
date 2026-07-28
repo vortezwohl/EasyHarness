@@ -1346,14 +1346,14 @@ class EasyHarnessSdkTests(unittest.TestCase):
         self.assertEqual(third, "turn:1 third")
 
     def test_agent_normalizes_strings_and_openai_message_history(self) -> None:
-        """公开输入必须在进入模型前转换为 Strands 消息且保留系统提示。"""
+        """Public input must become Strands messages while preserving the system prompt."""
 
         model = FakeModel()
         message_history = [
-            {"role": "user", "content": "查询状态"},
+            {"role": "user", "content": "Check the status"},
             {
                 "role": "assistant",
-                "content": "我会查询。",
+                "content": "I will check it.",
                 "tool_calls": [
                     {
                         "id": "call-1",
@@ -1370,7 +1370,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 "tool_call_id": "call-1",
                 "content": "passed",
             },
-            {"role": "user", "content": "继续"},
+            {"role": "user", "content": "Continue"},
         ]
         original_history = copy.deepcopy(message_history)
 
@@ -1383,30 +1383,30 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 system_prompt="only this system prompt",
                 enable_fileglide=False,
             )
-            agent.run("预热")
-            run_result = agent.run([{"role": "user", "content": "run 列表输入"}])
+            agent.run("Warm up")
+            run_result = agent.run([{"role": "user", "content": "Run list input"}])
             agent.reset()
             events = list(agent.stream(message_history))
 
         self.assertEqual(
             model.stream_calls[0],
-            ([{"role": "user", "content": [{"text": "预热"}]}], "only this system prompt"),
+            ([{"role": "user", "content": [{"text": "Warm up"}]}], "only this system prompt"),
         )
-        self.assertEqual(run_result, "turn:2 run 列表输入")
+        self.assertEqual(run_result, "turn:2 Run list input")
         self.assertEqual(model.stream_calls[1][1], "only this system prompt")
         self.assertEqual(
             model.stream_calls[1][0][-1:],
-            [{"role": "user", "content": [{"text": "run 列表输入"}]}],
+            [{"role": "user", "content": [{"text": "Run list input"}]}],
         )
         self.assertEqual(model.stream_calls[-1][1], "only this system prompt")
         self.assertEqual(
             model.stream_calls[-1][0][-4:],
             [
-                {"role": "user", "content": [{"text": "查询状态"}]},
+                {"role": "user", "content": [{"text": "Check the status"}]},
                 {
                     "role": "assistant",
                     "content": [
-                        {"text": "我会查询。"},
+                        {"text": "I will check it."},
                         {
                             "toolUse": {
                                 "toolUseId": "call-1",
@@ -1428,14 +1428,14 @@ class EasyHarnessSdkTests(unittest.TestCase):
                         }
                     ],
                 },
-                {"role": "user", "content": [{"text": "继续"}]},
+                {"role": "user", "content": [{"text": "Continue"}]},
             ],
         )
         self.assertEqual(message_history, original_history)
         self.assertTrue(any(event.kind == "assistant" for event in events))
 
     def test_agent_rejects_unsupported_openai_message_history(self) -> None:
-        """系统角色和非法 OpenAI 历史必须在模型调用前失败且不污染会话。"""
+        """Invalid OpenAI history must fail before model invocation without polluting state."""
 
         model = FakeModel()
         invalid_prompts = [
@@ -1480,14 +1480,14 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 enable_fileglide=False,
             )
             for prompt in invalid_prompts:
-                with self.assertRaisesRegex(ValueError, "消息索引 0"):
+                with self.assertRaisesRegex(ValueError, "Message at index 0"):
                     agent.run(prompt)
-            with self.assertRaisesRegex(ValueError, "消息索引 0"):
+            with self.assertRaisesRegex(ValueError, "Message at index 0"):
                 list(agent.stream(invalid_prompts[0]))
-            result = agent.run("仍可调用")
+            result = agent.run("Still callable")
 
         self.assertEqual(len(model.stream_calls), 1)
-        self.assertEqual(result, "turn:1 仍可调用")
+        self.assertEqual(result, "turn:1 Still callable")
 
     def test_agent_cancel_is_noop_while_idle(self) -> None:
         """Calling cancel while idle must not affect a later invocation."""

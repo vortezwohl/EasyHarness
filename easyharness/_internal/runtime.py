@@ -103,26 +103,28 @@ def _extract_message_text(message: Message | None) -> str:
 
 
 def _normalize_prompt(prompt: PromptInput) -> Messages:
-    """将公开输入严格转换为 Strands 内部消息格式。
+    """Convert public input strictly to Strands internal message format.
 
-    字符串和 OpenAI Chat Completions 的文本/function-tool 历史在这里统一
-    适配，确保底层 Strands Agent 永远只接收 ``Messages``。系统提示属于
-    Agent 构造参数，故输入列表中的 ``system`` 与 ``developer`` 必须失败，
-    不能被静默忽略或合并。
+    This adapter accepts strings and the supported text/function-tool subset of
+    OpenAI Chat Completions history, so the underlying Strands Agent always
+    receives ``Messages``. System prompts belong to Agent construction; input
+    ``system`` and ``developer`` messages must therefore fail instead of being
+    silently ignored or merged.
 
     Args:
-        prompt: 单条用户文本，或允许的 OpenAI Chat Completions 消息列表。
+        prompt: A single user text message or supported OpenAI Chat Completions
+            message history.
 
     Returns:
-        新建的 Strands 消息列表，不会修改调用方提供的对象。
+        A new Strands message list without mutating caller-provided objects.
 
     Raises:
-        ValueError: 输入角色、字段、文本内容或函数调用结构不符合已支持的
-            严格子集时抛出。
+        ValueError: The role, fields, text content, or function-call structure
+            is outside the supported strict subset.
     """
 
     def fail(index: int, field: str, reason: str) -> None:
-        raise ValueError(f"消息索引 {index} 的字段 {field} 无效: {reason}")
+        raise ValueError(f"Message at index {index} has invalid {field}: {reason}")
 
     def reject_unknown_fields(
         message: dict[str, object],
@@ -131,26 +133,26 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
     ) -> None:
         unknown_fields = sorted(str(field) for field in set(message) - allowed_fields)
         if unknown_fields:
-            fail(index, "message", f"不支持字段 {', '.join(unknown_fields)}")
+            fail(index, "message", f"unsupported fields: {', '.join(unknown_fields)}")
 
     if isinstance(prompt, str):
         return [{"role": "user", "content": [{"text": prompt}]}]
     if not isinstance(prompt, list):
-        raise ValueError("prompt 必须是 str 或 list[dict]")
+        raise ValueError("prompt must be str or list[dict]")
 
     messages: Messages = []
     for message_index, raw_message in enumerate(prompt):
         if not isinstance(raw_message, dict):
-            fail(message_index, "message", "必须是 dict")
+            fail(message_index, "message", "must be a dict")
 
         role = raw_message.get("role")
         if role in {"system", "developer"}:
-            fail(message_index, "role", "不允许覆盖或补充 system_prompt")
+            fail(message_index, "role", "cannot override or supplement system_prompt")
         if role == "user":
             reject_unknown_fields(raw_message, message_index, {"role", "content"})
             content = raw_message.get("content")
             if not isinstance(content, str):
-                fail(message_index, "content", "user 消息必须是 str")
+                fail(message_index, "content", "user message must be str")
             messages.append({"role": "user", "content": [{"text": content}]})
             continue
         if role == "assistant":
@@ -161,7 +163,7 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
             )
             content = raw_message.get("content")
             if content is not None and not isinstance(content, str):
-                fail(message_index, "content", "assistant 消息必须是 str 或 None")
+                fail(message_index, "content", "assistant message must be str or None")
 
             blocks: list[dict[str, object]] = []
             if isinstance(content, str):
@@ -170,11 +172,11 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
             tool_calls = raw_message.get("tool_calls")
             if tool_calls is not None:
                 if not isinstance(tool_calls, list) or not tool_calls:
-                    fail(message_index, "tool_calls", "必须是非空 list")
+                    fail(message_index, "tool_calls", "must be a non-empty list")
                 for call_index, raw_call in enumerate(tool_calls):
                     call_path = f"tool_calls[{call_index}]"
                     if not isinstance(raw_call, dict):
-                        fail(message_index, call_path, "必须是 dict")
+                        fail(message_index, call_path, "must be a dict")
                     unknown_call_fields = sorted(
                         str(field)
                         for field in set(raw_call) - {"id", "type", "function"}
@@ -183,18 +185,18 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
                         fail(
                             message_index,
                             call_path,
-                            f"不支持字段 {', '.join(unknown_call_fields)}",
+                            f"unsupported fields: {', '.join(unknown_call_fields)}",
                         )
 
                     tool_use_id = raw_call.get("id")
                     call_type = raw_call.get("type")
                     function = raw_call.get("function")
                     if not isinstance(tool_use_id, str) or not tool_use_id:
-                        fail(message_index, f"{call_path}.id", "必须是非空 str")
+                        fail(message_index, f"{call_path}.id", "must be a non-empty str")
                     if call_type != "function":
-                        fail(message_index, f"{call_path}.type", "必须为 function")
+                        fail(message_index, f"{call_path}.type", "must be function")
                     if not isinstance(function, dict):
-                        fail(message_index, f"{call_path}.function", "必须是 dict")
+                        fail(message_index, f"{call_path}.function", "must be a dict")
 
                     unknown_function_fields = sorted(
                         str(field)
@@ -204,7 +206,7 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
                         fail(
                             message_index,
                             f"{call_path}.function",
-                            f"不支持字段 {', '.join(unknown_function_fields)}",
+                            f"unsupported fields: {', '.join(unknown_function_fields)}",
                         )
 
                     name = function.get("name")
@@ -213,13 +215,13 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
                         fail(
                             message_index,
                             f"{call_path}.function.name",
-                            "必须是非空 str",
+                            "must be a non-empty str",
                         )
                     if not isinstance(arguments, str):
                         fail(
                             message_index,
                             f"{call_path}.function.arguments",
-                            "必须是 JSON object 字符串",
+                            "must be a JSON object string",
                         )
                     try:
                         tool_input = json.loads(arguments)
@@ -227,13 +229,13 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
                         fail(
                             message_index,
                             f"{call_path}.function.arguments",
-                            "必须是有效 JSON object",
+                            "must be valid JSON object",
                         )
                     if not isinstance(tool_input, dict):
                         fail(
                             message_index,
                             f"{call_path}.function.arguments",
-                            "必须解码为 JSON object",
+                            "must decode to a JSON object",
                         )
                     blocks.append(
                         {
@@ -246,7 +248,7 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
                     )
 
             if not blocks:
-                fail(message_index, "message", "assistant 消息必须包含 content 或 tool_calls")
+                fail(message_index, "message", "assistant message must include content or tool_calls")
             messages.append({"role": "assistant", "content": blocks})
             continue
         if role == "tool":
@@ -258,9 +260,9 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
             tool_use_id = raw_message.get("tool_call_id")
             content = raw_message.get("content")
             if not isinstance(tool_use_id, str) or not tool_use_id:
-                fail(message_index, "tool_call_id", "必须是非空 str")
+                fail(message_index, "tool_call_id", "must be a non-empty str")
             if not isinstance(content, str):
-                fail(message_index, "content", "tool 消息必须是 str")
+                fail(message_index, "content", "tool message must be str")
             messages.append(
                 {
                     "role": "user",
@@ -277,7 +279,7 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
             )
             continue
 
-        fail(message_index, "role", "仅支持 user、assistant 或 tool")
+        fail(message_index, "role", "only user, assistant, and tool are supported")
 
     return messages
 
@@ -745,8 +747,8 @@ class _StrandsRuntime:
         """Run one synchronous session turn and return the final text.
 
         Args:
-            prompt: 用户文本，或 OpenAI Chat Completions 文本/function-tool
-                消息列表。
+            prompt: User text or OpenAI Chat Completions text/function-tool
+                message history.
 
         Returns:
             Final assistant text for the current turn.
@@ -770,8 +772,8 @@ class _StrandsRuntime:
         """Return the public event stream as a synchronous generator.
 
         Args:
-            prompt: 用户文本，或 OpenAI Chat Completions 文本/function-tool
-                消息列表。
+            prompt: User text or OpenAI Chat Completions text/function-tool
+                message history.
 
         Yields:
             Unified `AgentEvent` objects.
@@ -861,8 +863,8 @@ class Agent:
         """Run one turn and return the final text result.
 
         Args:
-            prompt: 用户文本，或 OpenAI Chat Completions 文本/function-tool
-                消息列表。
+            prompt: User text or OpenAI Chat Completions text/function-tool
+                message history.
 
         Returns:
             Final assistant text output.
@@ -874,8 +876,8 @@ class Agent:
         """Run one turn and return the unified event stream.
 
         Args:
-            prompt: 用户文本，或 OpenAI Chat Completions 文本/function-tool
-                消息列表。
+            prompt: User text or OpenAI Chat Completions text/function-tool
+                message history.
 
         Yields:
             Unified `AgentEvent` objects.
