@@ -126,14 +126,16 @@ print(agent.run("Did the latest build pass on main?"))
 
 ### Drive a live interface
 
-`stream()` is the authoritative interface for a timeline, progress UI, or cancel control. Every event carries `kind`, `status`, timing information, and optional data.
+`stream()` is the authoritative interface for a timeline, progress UI, or cancel control. Every event has a monotonically increasing `sequence`, a stable `phase_id`, a `kind`, an `operation`, timing information, and optional `data`.
 
 ```python
+buffer: list[str] = []
 for event in agent.stream("Inspect the project and explain the next step."):
-    print(event.kind, event.status, event.name, event.text)
+    if event.operation == "delta":
+        buffer.append(event.delta)
 ```
 
-The shared statuses are `started`, `delta`, `completed`, `failed`, and `cancelled`. On cancellation, the active phase ends as `cancelled`, the stream ends with `system/cancelled`, and the same `Agent` remains reusable.
+The operations are `started`, `delta`, `completed`, `failed`, and `cancelled`. A `delta` carries only newly produced text. Terminal operations never carry a delta; tool output is available in `event.data["output"]`. On cancellation, active phases end as `cancelled`, the stream ends with `system/cancelled`, and the same `Agent` remains reusable.
 
 ```python
 agent.cancel()  # A no-op while idle; requests cooperative cancellation while running.

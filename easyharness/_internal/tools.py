@@ -41,6 +41,7 @@ from strands.types.tools import (
     ToolUse,
 )
 
+from easyharness._internal.streaming import RuntimeSignal
 from easyharness._internal.types import ToolOutput, _ToolContextAnnotation
 
 RequiredMetadata = Mapping[str, str]
@@ -742,16 +743,21 @@ class _EasyHarnessTool(AgentTool):
         except ValidationError as error:
             duration_ms = int((time.perf_counter() - start) * 1000)
             message = error.json(ensure_ascii=False)
-            yield {
-                "easyharness_tool": {
-                    "status": "failed",
-                    "name": self.tool_name,
+            yield RuntimeSignal(
+                source="tool",
+                kind="tool",
+                operation="failed",
+                phase_key=tool_use_id,
+                error=message,
+                started_at=started_at,
+                duration_ms=duration_ms,
+                data={
                     "tool_use_id": tool_use_id,
-                    "started_at": started_at,
-                    "duration_ms": duration_ms,
-                    "error": message,
-                }
-            }
+                    "name": self.tool_name,
+                    "input": tool_use.get("input", dict()),
+                    "output": None,
+                },
+            )
             yield ToolResultEvent(
                 {
                     "toolUseId": tool_use_id,
@@ -763,15 +769,19 @@ class _EasyHarnessTool(AgentTool):
             return
 
         arguments = validated.model_dump()
-        yield {
-            "easyharness_tool": {
-                "status": "started",
-                "name": self.tool_name,
+        yield RuntimeSignal(
+            source="tool",
+            kind="tool",
+            operation="started",
+            phase_key=tool_use_id,
+            started_at=started_at,
+            data={
                 "tool_use_id": tool_use_id,
-                "started_at": started_at,
+                "name": self.tool_name,
                 "input": arguments,
-            }
-        }
+                "output": None,
+            },
+        )
 
         try:
             call_arguments = {
@@ -782,37 +792,46 @@ class _EasyHarnessTool(AgentTool):
             output = _normalize_tool_output(raw_output)
             self._tool_outputs_store(invocation_state)[tool_use_id] = output
             duration_ms = int((time.perf_counter() - start) * 1000)
-            yield {
-                "easyharness_tool": {
-                    "status": "completed",
-                    "name": self.tool_name,
+            yield RuntimeSignal(
+                source="tool",
+                kind="tool",
+                operation="completed",
+                phase_key=tool_use_id,
+                started_at=started_at,
+                duration_ms=duration_ms,
+                data={
                     "tool_use_id": tool_use_id,
-                    "started_at": started_at,
-                    "duration_ms": duration_ms,
+                    "name": self.tool_name,
+                    "input": arguments,
                     "output": asdict(output),
-                }
-            }
+                },
+            )
             yield ToolResultEvent(_tool_output_to_result(tool_use_id, output))
         except Exception as error:
             duration_ms = int((time.perf_counter() - start) * 1000)
+            message = str(error) or type(error).__name__
             failed_output = ToolOutput(
-                data={"error": str(error)},
-                model_text=f"Error: {error}",
-                preview=f"Error: {error}",
+                data={"error": message},
+                model_text=f"Error: {message}",
+                preview=f"Error: {message}",
                 detail=traceback.format_exc(),
             )
             self._tool_outputs_store(invocation_state)[tool_use_id] = failed_output
-            yield {
-                "easyharness_tool": {
-                    "status": "failed",
-                    "name": self.tool_name,
+            yield RuntimeSignal(
+                source="tool",
+                kind="tool",
+                operation="failed",
+                phase_key=tool_use_id,
+                error=message,
+                started_at=started_at,
+                duration_ms=duration_ms,
+                data={
                     "tool_use_id": tool_use_id,
-                    "started_at": started_at,
-                    "duration_ms": duration_ms,
-                    "error": str(error),
+                    "name": self.tool_name,
+                    "input": arguments,
                     "output": asdict(failed_output),
-                }
-            }
+                },
+            )
             yield ToolResultEvent(
                 _tool_output_to_result(tool_use_id, failed_output, status="error"),
                 exception=error,
