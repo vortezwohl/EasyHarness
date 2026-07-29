@@ -13,7 +13,7 @@ import time
 from copy import Error as CopyError
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Callable, Protocol
+from typing import Callable, Protocol, cast
 
 from strands.agent.agent import Agent as StrandsAgent
 from strands.agent.conversation_manager import (
@@ -23,9 +23,12 @@ from strands.agent.conversation_manager import (
     SummarizingConversationManager,
 )
 
+from easyharness._internal.streaming import RuntimeSignal
+from easyharness._internal.types import EventOperation
+
 logger = logging.getLogger(__name__)
 
-InternalEventSink = Callable[[dict[str, object]], None]
+InternalEventSink = Callable[[RuntimeSignal], None]
 DEFAULT_PROACTIVE_COMPRESSION: ProactiveCompressionConfig = {
     "compression_threshold": 0.7,
 }
@@ -104,21 +107,28 @@ class EventingSummarizingConversationManager(SummarizingConversationManager):
         duration_ms: int | None = None,
         error: str | None = None,
     ) -> None:
-        """Emit an internal compression event to the upper layer."""
+        """Emit one typed private compression signal when a sink is bound."""
 
         if self._event_sink is None:
             return
+        if status not in {"started", "completed", "failed"}:
+            return
 
-        compress_event: dict[str, object] = {
-            "status": status,
-            "started_at": started_at,
-            "duration_ms": duration_ms,
-            "mode": mode,
-        }
-        if error is not None:
-            compress_event["error"] = error
-        payload = {"easyharness_compress": compress_event}
-        self._event_sink(payload)
+        operation = cast(EventOperation, status)
+        if operation == "failed":
+            error = error or "compression failed"
+        self._event_sink(
+            RuntimeSignal(
+                source="compress",
+                kind="compress",
+                operation=operation,
+                phase_key="compress",
+                error=error,
+                started_at=started_at,
+                duration_ms=duration_ms,
+                data={"mode": mode},
+            )
+        )
 
     def reduce_context(
         self,

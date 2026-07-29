@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterator, NoReturn, cast
+from typing import Iterator, NoReturn
 
 from strands import Agent as StrandsAgent
 from strands.agent.conversation_manager import ConversationManager
@@ -29,23 +29,17 @@ from easyharness._internal.conversation import (
     clone_conversation_manager,
 )
 from easyharness._internal.model import build_runtime_model
+from easyharness._internal.streaming import RuntimeSignal
 from easyharness._internal.types import (
     AgentBusyError,
     AgentEvent,
     EventKind,
-    EventStatus,
+    EventOperation,
     ModelConfig,
 )
 
 _STREAM_END = object()
 PromptInput = str | list[Mapping[str, object]]
-_EVENT_STATUSES: tuple[EventStatus, ...] = (
-    "started",
-    "delta",
-    "completed",
-    "failed",
-    "cancelled",
-)
 
 
 def _tool_public_name(tool_obj: object) -> str:
@@ -105,14 +99,6 @@ def _optional_int(value: object) -> int | None:
     """Return the value only when it is a non-boolean integer."""
 
     return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _event_status(value: object) -> EventStatus | None:
-    """Validate untyped event statuses against the public Literal contract."""
-
-    if isinstance(value, str) and value in _EVENT_STATUSES:
-        return cast(EventStatus, value)
-    return None
 
 
 def _extract_message_text(message: Message | None) -> str:
@@ -353,369 +339,265 @@ def _normalize_prompt(prompt: PromptInput) -> Messages:
 
 @dataclass(slots=True)
 class _PhaseState:
-    """Track phase start state and accumulated text for one stream phase."""
+    """Track one active public lifecycle phase."""
 
+    phase_id: str
+    kind: EventKind
     started_at: str
     started_monotonic: float
-    chunks: list[str]
-
-
-@dataclass(slots=True)
-class _ToolPhaseState:
-    """Track the active public tool phase for cancellation-aware finalization."""
-
-    started_at: str
-    started_monotonic: float
-    name: str | None
-    tool_use_id: str | None
-    tool_input: object | None
+    data: Mapping[str, object] | None
 
 
 class _EventMapper:
-    """Map low-level runtime events into public `AgentEvent` objects."""
+    """Project private runtime signals into canonical public events."""
 
     def __init__(self, output_queue: "queue.Queue[object]") -> None:
-        """Initialize the event mapper.
-
-        Args:
-            output_queue: Event queue consumed by the synchronous caller.
-        """
+        """Initialize the projector state for one stream invocation."""
 
         self._output_queue = output_queue
-        self._thinking: _PhaseState | None = None
-        self._assistant: _PhaseState | None = None
-        self._active_tools: dict[str, _ToolPhaseState] = dict()
+        self._sequence = 0
+        self._phase_number = 0
+        self._phases: dict[tuple[str, str], _PhaseState] = {}
+        self._finished_phase_keys: set[tuple[str, str]] = set()
+        self._assistant_has_delta = False
+
+    @staticmethod
+    def _phase_key(signal: RuntimeSignal) -> tuple[str, str]:
+        """Return the registry key for one private phase."""
+
+        return signal.kind, signal.phase_key or signal.kind
 
     def _emit(
         self,
+        phase: _PhaseState,
+        operation: EventOperation,
         *,
-        kind: EventKind,
-        status: EventStatus,
-        text: str | None = None,
-        name: str | None = None,
-        started_at: str | None = None,
+        delta: str | None = None,
+        error: str | None = None,
         duration_ms: int | None = None,
-        data: object | None = None,
+        data: Mapping[str, object] | None = None,
     ) -> None:
-        """Push one public event into the output queue."""
+        """Create and queue one uniquely sequenced public event."""
 
         self._output_queue.put(
             AgentEvent(
-                kind=kind,
-                status=status,
-                text=text,
-                name=name,
-                started_at=started_at,
+                sequence=self._sequence,
+                phase_id=phase.phase_id,
+                kind=phase.kind,
+                operation=operation,
+                delta=delta,
+                error=error,
+                started_at=phase.started_at,
                 duration_ms=duration_ms,
                 data=data,
             )
         )
+        self._sequence += 1
 
-    @staticmethod
-    def _start_phase() -> _PhaseState:
-        """Create a fresh phase state object."""
+    def _start_phase(self, signal: RuntimeSignal) -> _PhaseState:
+        """Start a phase once and return its active state."""
 
-        return _PhaseState(
-            started_at=utc_now_iso(),
+        key = self._phase_key(signal)
+        phase = self._phases.get(key)
+        if phase is not None:
+            return phase
+
+        self._phase_number += 1
+        phase = _PhaseState(
+            phase_id=f"{signal.kind}-{self._phase_number}",
+            kind=signal.kind,
+            started_at=signal.started_at or utc_now_iso(),
             started_monotonic=time.perf_counter(),
-            chunks=[],
+            data=signal.data,
+        )
+        self._phases[key] = phase
+        self._finished_phase_keys.discard(key)
+        self._emit(phase, "started", data=signal.data)
+        return phase
+
+    def finish_phase(self, signal: RuntimeSignal) -> None:
+        """Finish one phase through the only terminal-event path."""
+
+        key = self._phase_key(signal)
+        phase = self._phases.pop(key, None)
+        if phase is None:
+            if key in self._finished_phase_keys:
+                return
+            phase = self._start_phase(signal)
+            self._phases.pop(key, None)
+
+        self._finished_phase_keys.add(key)
+        duration_ms = signal.duration_ms
+        if duration_ms is None:
+            duration_ms = int((time.perf_counter() - phase.started_monotonic) * 1000)
+        self._emit(
+            phase,
+            signal.operation,
+            error=signal.error if signal.operation == "failed" else None,
+            duration_ms=duration_ms,
+            data=signal.data if signal.data is not None else phase.data,
         )
 
-    def _flush_thinking(
-        self, status: EventStatus = "completed", text_override: str | None = None
-    ) -> None:
-        """Finish the thinking phase and emit its terminal event."""
+    def project(self, signal: RuntimeSignal) -> None:
+        """Project one adapted private signal."""
 
-        if self._thinking is None:
+        if signal.operation == "started":
+            self._start_phase(signal)
             return
 
-        text = (
-            text_override
-            if text_override is not None
-            else "".join(self._thinking.chunks)
-        )
-        duration_ms = int(
-            (time.perf_counter() - self._thinking.started_monotonic) * 1000
-        )
-        self._emit(
-            kind="thinking",
-            status=status,
-            text=text or None,
-            started_at=self._thinking.started_at,
-            duration_ms=duration_ms,
-        )
-        self._thinking = None
-
-    def _flush_assistant(
-        self, status: EventStatus = "completed", text_override: str | None = None
-    ) -> None:
-        """Finish the assistant phase and emit its terminal event."""
-
-        if self._assistant is None:
+        if signal.operation == "delta":
+            if not signal.delta:
+                return
+            phase = self._start_phase(signal)
+            if phase.kind == "assistant":
+                self._assistant_has_delta = True
+            self._emit(phase, "delta", delta=signal.delta, data=signal.data)
             return
 
-        text = (
-            text_override
-            if text_override is not None
-            else "".join(self._assistant.chunks)
-        )
-        duration_ms = int(
-            (time.perf_counter() - self._assistant.started_monotonic) * 1000
-        )
-        self._emit(
-            kind="assistant",
-            status=status,
-            text=text or None,
-            started_at=self._assistant.started_at,
-            duration_ms=duration_ms,
-        )
-        self._assistant = None
+        self.finish_phase(signal)
 
-    def _complete_tool_phase(
+    def _finish_kind(
         self,
-        *,
-        status: EventStatus,
-        tool_event: Mapping[str, object] | None = None,
-        text: str | None = None,
+        kind: EventKind,
+        operation: EventOperation,
+        error: str | None = None,
     ) -> None:
-        """Emit the terminal event for the currently tracked tool phase."""
+        """Finish every active phase of one kind."""
 
-        tool_use_id = (
-            _optional_str(tool_event.get("tool_use_id")) if tool_event else None
-        )
-        tracked = (
-            self._active_tools.pop(tool_use_id)
-            if tool_use_id is not None
-            else None
-        )
-        if tracked is None and tool_event is None:
-            return
-
-        started_at = (
-            tracked.started_at
-            if tracked is not None
-            else _optional_str(tool_event.get("started_at"))
-        )
-        duration_ms = (
-            int((time.perf_counter() - tracked.started_monotonic) * 1000)
-            if tracked is not None
-            else _optional_int(tool_event.get("duration_ms"))
-        )
-        name = (
-            tracked.name
-            if tracked is not None
-            else _optional_str(tool_event.get("name"))
-        )
-        public_tool_use_id = tracked.tool_use_id if tracked is not None else tool_use_id
-        tool_input = (
-            tracked.tool_input if tracked is not None else tool_event.get("input")
-        )
-        output = tool_event.get("output") if tool_event is not None else None
-
-        self._emit(
-            kind="tool",
-            status=status,
-            text=text,
-            name=name,
-            started_at=started_at,
-            duration_ms=duration_ms,
-            data={
-                "tool_use_id": public_tool_use_id,
-                "input": tool_input,
-                "output": output,
-            },
-        )
-
-    def _emit_system_cancelled(self, text: str | None = None) -> None:
-        """Emit the final public system event for a cancelled invocation."""
-
-        self._emit(
-            kind="system",
-            status="cancelled",
-            text=text,
-            started_at=utc_now_iso(),
-            data={"stop_reason": "cancelled"},
-        )
-
-    def _handle_cancelled_result(self, result: object) -> None:
-        """Convert a cancelled low-level result into public cancelled events."""
-
-        final_text = _extract_message_text(getattr(result, "message", None)) or None
-        if self._active_tools:
-            for tool_use_id in list(self._active_tools):
-                self._complete_tool_phase(
-                    status="cancelled",
-                    tool_event={"tool_use_id": tool_use_id},
-                )
-        elif self._assistant is not None:
-            self._flush_assistant(status="cancelled")
-        elif self._thinking is not None:
-            self._flush_thinking(status="cancelled")
-
-        self._emit_system_cancelled(final_text)
-
-    def emit_internal(self, payload: dict[str, object]) -> None:
-        """Handle internal events pushed directly by the conversation manager."""
-
-        compress_event = payload.get("easyharness_compress")
-        if not isinstance(compress_event, dict):
-            return
-        status = _event_status(compress_event.get("status"))
-        if status is None:
-            return
-
-        self._emit(
-            kind="compress",
-            status=status,
-            started_at=_optional_str(compress_event.get("started_at")),
-            duration_ms=_optional_int(compress_event.get("duration_ms")),
-            text=_optional_str(compress_event.get("error")),
-            data={"mode": compress_event.get("mode")},
-        )
-
-    def feed(self, raw_event: dict[str, object]) -> None:
-        """Consume a single low-level event.
-
-        Args:
-            raw_event: Raw event dictionary produced by Strands `stream_async`.
-        """
-
-        if "reasoningText" in raw_event:
-            if self._thinking is None:
-                self._flush_assistant()
-                self._thinking = self._start_phase()
-                self._emit(
-                    kind="thinking",
-                    status="started",
-                    started_at=self._thinking.started_at,
+        for key, phase in list(self._phases.items()):
+            if phase.kind == kind:
+                self.project(
+                    RuntimeSignal(
+                        source="runtime",
+                        kind=kind,
+                        operation=operation,
+                        phase_key=key[1],
+                        error=error,
+                    )
                 )
 
-            chunk = _optional_str(raw_event.get("reasoningText")) or ""
-            self._thinking.chunks.append(chunk)
-            self._emit(
-                kind="thinking",
-                status="delta",
-                text=chunk,
-                started_at=self._thinking.started_at,
+    def _emit_text_delta(self, kind: EventKind, delta: str) -> None:
+        """Adapt one Strands text delta into private phase signals."""
+
+        self.project(
+            RuntimeSignal(
+                source="strands",
+                kind=kind,
+                operation="started",
+                phase_key=kind,
             )
-            return
-
-        if raw_event.get("type") == "tool_stream":
-            stream_event = raw_event.get("tool_stream_event")
-            if not isinstance(stream_event, Mapping):
-                return
-            marker = stream_event.get("data")
-            if not isinstance(marker, Mapping):
-                return
-            tool_event = marker.get("easyharness_tool")
-            if isinstance(tool_event, Mapping):
-                self._flush_thinking()
-                status = _event_status(tool_event.get("status"))
-                if status is None:
-                    return
-                if status == "started":
-                    tool_use_id = _optional_str(tool_event.get("tool_use_id"))
-                    started_at = _optional_str(tool_event.get("started_at"))
-                    name = _optional_str(tool_event.get("name"))
-                    if tool_use_id is not None and started_at is not None:
-                        self._active_tools[tool_use_id] = _ToolPhaseState(
-                            started_at=started_at,
-                            started_monotonic=time.perf_counter(),
-                            name=name,
-                            tool_use_id=tool_use_id,
-                            tool_input=tool_event.get("input"),
-                        )
-                    self._emit(
-                        kind="tool",
-                        status="started",
-                        name=name,
-                        started_at=started_at,
-                        data={
-                            "tool_use_id": tool_event.get("tool_use_id"),
-                            "input": tool_event.get("input"),
-                            "output": None,
-                        },
-                    )
-                else:
-                    output = tool_event.get("output")
-                    output_preview = (
-                        _optional_str(output.get("preview"))
-                        if isinstance(output, Mapping)
-                        else None
-                    )
-                    output_model_text = (
-                        _optional_str(output.get("model_text"))
-                        if isinstance(output, Mapping)
-                        else None
-                    )
-                    self._complete_tool_phase(
-                        status=status,
-                        tool_event=tool_event,
-                        text=_optional_str(tool_event.get("error"))
-                        or output_preview
-                        or output_model_text,
-                    )
-            return
-
-        if "data" in raw_event:
-            if self._assistant is None:
-                self._flush_thinking()
-                self._assistant = self._start_phase()
-                self._emit(
-                    kind="assistant",
-                    status="started",
-                    started_at=self._assistant.started_at,
-                )
-
-            chunk = _optional_str(raw_event.get("data")) or ""
-            self._assistant.chunks.append(chunk)
-            self._emit(
-                kind="assistant",
-                status="delta",
-                text=chunk,
-                started_at=self._assistant.started_at,
+        )
+        self.project(
+            RuntimeSignal(
+                source="strands",
+                kind=kind,
+                operation="delta",
+                phase_key=kind,
+                delta=delta,
             )
+        )
+
+    def emit_internal(self, signal: RuntimeSignal) -> None:
+        """Project a private signal emitted by the conversation manager."""
+
+        self.project(signal)
+
+    def feed(self, raw: Mapping[str, object]) -> None:
+        """Adapt one raw Strands event and project it."""
+
+        reasoning = _optional_str(raw.get("reasoningText"))
+        if reasoning:
+            self._finish_kind("assistant", "completed")
+            self._emit_text_delta("thinking", reasoning)
             return
 
-        if "result" in raw_event:
-            result = raw_event["result"]
-            if getattr(result, "stop_reason", None) == "cancelled":
-                self._handle_cancelled_result(result)
-                return
-            final_text = _extract_message_text(getattr(result, "message", None))
-            if self._assistant is None and final_text:
-                self._assistant = self._start_phase()
-            self._flush_thinking()
-            self._flush_assistant(text_override=final_text or None)
+        if raw.get("type") == "tool_stream":
+            stream_event = raw.get("tool_stream_event")
+            signal = (
+                stream_event.get("data")
+                if isinstance(stream_event, Mapping)
+                else None
+            )
+            if isinstance(signal, RuntimeSignal):
+                self._finish_kind("thinking", "completed")
+                self.project(signal)
             return
 
-        if raw_event.get("event_loop_throttled_delay") is not None:
-            self._emit(
+        delta = _optional_str(raw.get("data"))
+        if delta:
+            self._finish_kind("thinking", "completed")
+            self._emit_text_delta("assistant", delta)
+            return
+
+        if "result" not in raw:
+            return
+
+        result = raw["result"]
+        if getattr(result, "stop_reason", None) == "cancelled":
+            self._finish_all("cancelled")
+            self._emit_system("cancelled", data={"stop_reason": "cancelled"})
+            return
+
+        self._finish_kind("thinking", "completed")
+        final_text = _extract_message_text(getattr(result, "message", None))
+        if not self._assistant_has_delta and final_text:
+            self._emit_text_delta("assistant", final_text)
+        self._finish_kind("assistant", "completed")
+
+    def _finish_all(self, operation: EventOperation, error: str | None = None) -> None:
+        """Finish every active registered phase."""
+
+        for key, phase in list(self._phases.items()):
+            self.project(
+                RuntimeSignal(
+                    source="runtime",
+                    kind=phase.kind,
+                    operation=operation,
+                    phase_key=key[1],
+                    error=error,
+                )
+            )
+
+    def _emit_system(
+        self,
+        operation: EventOperation,
+        *,
+        data: Mapping[str, object] | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Emit one invocation-level system lifecycle phase."""
+
+        phase_key = f"system-{self._sequence}"
+        self.project(
+            RuntimeSignal(
+                source="runtime",
                 kind="system",
-                status="delta",
-                text=(
-                    f"tool/model throttled: {raw_event['event_loop_throttled_delay']}s"
-                ),
-                started_at=utc_now_iso(),
+                operation="started",
+                phase_key=phase_key,
             )
+        )
+        self.project(
+            RuntimeSignal(
+                source="runtime",
+                kind="system",
+                operation=operation,
+                phase_key=phase_key,
+                error=error,
+                data=data,
+            )
+        )
 
     def finalize(self) -> None:
-        """Flush any remaining phase state when the stream ends."""
+        """Finish active phases after a normal upstream end."""
 
-        self._flush_thinking()
-        self._flush_assistant()
+        self._finish_all("completed")
 
     def fail(self, error: BaseException) -> None:
-        """Emit failure events when the stream ends with an exception."""
+        """Fail active phases after an upstream exception."""
 
-        self._flush_thinking(status="failed", text_override=str(error))
-        self._flush_assistant(status="failed", text_override=str(error))
-        self._emit(
-            kind="system",
-            status="failed",
-            text=str(error),
-            started_at=utc_now_iso(),
-        )
+        message = str(error) or type(error).__name__
+        self._finish_all("failed", message)
+        self._emit_system("failed", error=message)
 
 
 class _StrandsRuntime:

@@ -37,6 +37,7 @@ import easyharness
 from easyharness import (
     Agent,
     AgentBusyError,
+    AgentEvent,
     ModelConfig,
     OptionalToolContext,
     ToolContext,
@@ -50,6 +51,7 @@ from easyharness._internal.conversation import (
 )
 from easyharness._internal.model import build_runtime_model
 from easyharness._internal.runtime import _EventMapper, _StrandsRuntime
+from easyharness._internal.streaming import RuntimeSignal
 
 
 class _RequestContext:
@@ -361,26 +363,27 @@ class CustomConversationManager(ConversationManager):
         started_at = utc_now_iso()
         if self._event_sink:
             self._event_sink(
-                {
-                    "easyharness_compress": {
-                        "status": "started",
-                        "started_at": started_at,
-                        "duration_ms": None,
-                        "mode": "custom",
-                    }
-                }
+                RuntimeSignal(
+                    source="compress",
+                    kind="compress",
+                    operation="started",
+                    phase_key="compress",
+                    started_at=started_at,
+                    data={"mode": "custom"},
+                )
             )
         agent.messages[:] = agent.messages[-2:]
         if self._event_sink:
             self._event_sink(
-                {
-                    "easyharness_compress": {
-                        "status": "completed",
-                        "started_at": started_at,
-                        "duration_ms": 1,
-                        "mode": "custom",
-                    }
-                }
+                RuntimeSignal(
+                    source="compress",
+                    kind="compress",
+                    operation="completed",
+                    phase_key="compress",
+                    started_at=started_at,
+                    duration_ms=1,
+                    data={"mode": "custom"},
+                )
             )
 
 
@@ -405,6 +408,72 @@ class EasyHarnessSdkTests(unittest.TestCase):
                 "SlidingWindowConversationManager",
             },
         )
+    def test_agent_event_enforces_single_text_channel(self) -> None:
+        """公开事件必须只在 delta 操作承载一次新增文本。"""
+
+        started = AgentEvent(
+            sequence=0,
+            phase_id="thinking-1",
+            kind="thinking",
+            operation="started",
+        )
+        delta = AgentEvent(
+            sequence=1,
+            phase_id="thinking-1",
+            kind="thinking",
+            operation="delta",
+            delta="分析",
+        )
+        completed = AgentEvent(
+            sequence=2,
+            phase_id="thinking-1",
+            kind="thinking",
+            operation="completed",
+            duration_ms=3,
+        )
+        failed = AgentEvent(
+            sequence=3,
+            phase_id="assistant-1",
+            kind="assistant",
+            operation="failed",
+            error="模型中断",
+            duration_ms=4,
+        )
+
+        self.assertEqual(
+            [event.operation for event in (started, delta, completed, failed)],
+            ["started", "delta", "completed", "failed"],
+        )
+        self.assertEqual(delta.delta, "分析")
+        self.assertIsNone(completed.delta)
+        self.assertEqual(failed.error, "模型中断")
+        for deprecated_field in ("status", "text", "name"):
+            self.assertFalse(hasattr(delta, deprecated_field))
+
+        with self.assertRaisesRegex(ValueError, "only delta events"):
+            AgentEvent(
+                sequence=4,
+                phase_id="assistant-1",
+                kind="assistant",
+                operation="completed",
+                delta="重复全文",
+            )
+        with self.assertRaisesRegex(ValueError, "require a non-empty error"):
+            AgentEvent(
+                sequence=5,
+                phase_id="assistant-1",
+                kind="assistant",
+                operation="failed",
+            )
+        with self.assertRaisesRegex(ValueError, "delta events cannot carry error"):
+            AgentEvent(
+                sequence=6,
+                phase_id="assistant-1",
+                kind="assistant",
+                operation="delta",
+                delta="新增",
+                error="错误",
+            )
 
     def test_tool_context_is_hidden_from_schema_and_metadata(self) -> None:
         """ToolContext parameters must remain private signature specifications."""
@@ -490,7 +559,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         completed_event = next(
             event
             for event in events
-            if event.kind == "tool" and event.status == "completed"
+            if event.kind == "tool" and event.operation == "completed"
         )
         self.assertEqual(completed_event.data["input"], {"text": "pong"})
         self.assertNotIn("request", completed_event.data["input"])
@@ -543,7 +612,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
             failed_event = next(
                 event
                 for event in events
-                if event.kind == "tool" and event.status == "failed"
+                if event.kind == "tool" and event.operation == "failed"
             )
             failure_text = str(failed_event.data)
             self.assertIn("request", failure_text)
@@ -694,11 +763,10 @@ class EasyHarnessSdkTests(unittest.TestCase):
         completed = next(
             event
             for event in events
-            if isinstance(event, dict)
-            and event.get("easyharness_tool", dict()).get("status") == "completed"
+            if isinstance(event, RuntimeSignal) and event.operation == "completed"
         )
         self.assertEqual(
-            completed["easyharness_tool"]["output"]["model_text"],
+            completed.data["output"]["model_text"],
             "default",
         )
 
@@ -1446,11 +1514,12 @@ class EasyHarnessSdkTests(unittest.TestCase):
         completed_tool_events = [
             event
             for event in events
-            if event.kind == "tool" and event.status == "completed"
+            if event.kind == "tool" and event.operation == "completed"
         ]
         self.assertEqual(len(completed_tool_events), 1)
         tool_event = completed_tool_events[0]
-        self.assertEqual(tool_event.name, "echo_tool")
+        self.assertIsNone(tool_event.delta)
+        self.assertEqual(tool_event.data["name"], "echo_tool")
         self.assertEqual(tool_event.data["output"]["preview"], "preview:pong")
         self.assertEqual(tool_event.data["output"]["detail"], "detail:pong")
 
@@ -1750,25 +1819,26 @@ class EasyHarnessSdkTests(unittest.TestCase):
             observed = []
             for event in agent.stream("slow_stream"):
                 observed.append(event)
-                if event.kind == "assistant" and event.status == "delta":
+                if event.kind == "assistant" and event.operation == "delta":
                     agent.cancel()
 
             resumed = agent.run("after-stream-cancel")
 
         self.assertIn(
             ("assistant", "cancelled"),
-            [(event.kind, event.status) for event in observed],
+            [(event.kind, event.operation) for event in observed],
         )
         self.assertIn(
             ("system", "cancelled"),
-            [(event.kind, event.status) for event in observed],
+            [(event.kind, event.operation) for event in observed],
         )
         final_system = next(
             event
             for event in reversed(observed)
-            if event.kind == "system" and event.status == "cancelled"
+            if event.kind == "system" and event.operation == "cancelled"
         )
         self.assertEqual(final_system.data["stop_reason"], "cancelled")
+        self.assertIsNone(final_system.delta)
         self.assertIn("after-stream-cancel", resumed)
 
     def test_stream_cancel_before_first_delta_still_emits_system_cancelled(
@@ -1797,8 +1867,8 @@ class EasyHarnessSdkTests(unittest.TestCase):
 
         self.assertFalse(worker.is_alive())
         self.assertEqual(
-            [(event.kind, event.status) for event in observed],
-            [("system", "cancelled")],
+            [(event.kind, event.operation) for event in observed],
+            [("system", "started"), ("system", "cancelled")],
         )
 
     def test_run_cancel_returns_cancelled_text_and_agent_stays_usable(self) -> None:
@@ -1835,19 +1905,24 @@ class EasyHarnessSdkTests(unittest.TestCase):
 
         output_queue: queue.Queue[object] = queue.Queue()
         mapper = _EventMapper(output_queue)
+        started_at = utc_now_iso()
         mapper.feed(
             {
                 "type": "tool_stream",
                 "tool_stream_event": {
-                    "data": {
-                        "easyharness_tool": {
-                            "status": "started",
-                            "name": "echo_tool",
+                    "data": RuntimeSignal(
+                        source="tool",
+                        kind="tool",
+                        operation="started",
+                        phase_key="tool-1",
+                        started_at=started_at,
+                        data={
                             "tool_use_id": "tool-1",
-                            "started_at": utc_now_iso(),
+                            "name": "echo_tool",
                             "input": {"text": "pong"},
-                        }
-                    }
+                            "output": None,
+                        },
+                    )
                 },
             }
         )
@@ -1868,26 +1943,27 @@ class EasyHarnessSdkTests(unittest.TestCase):
             observed.append(output_queue.get())
 
         self.assertEqual(
-            [(event.kind, event.status) for event in observed],
+            [(event.kind, event.operation) for event in observed],
             [
                 ("tool", "started"),
                 ("tool", "cancelled"),
+                ("system", "started"),
                 ("system", "cancelled"),
             ],
         )
+        self.assertEqual(observed[0].phase_id, observed[1].phase_id)
+        self.assertIsNone(observed[1].delta)
 
-    def test_event_mapper_ignores_invalid_compression_status(self) -> None:
-        """Ignore compression statuses outside the public AgentEvent contract."""
+    def test_event_mapper_ignores_unrecognized_tool_signal(self) -> None:
+        """Ignore unrecognized values in the private tool stream wrapper."""
 
         output_queue: queue.Queue[object] = queue.Queue()
         mapper = _EventMapper(output_queue)
 
-        mapper.emit_internal(
+        mapper.feed(
             {
-                "easyharness_compress": {
-                    "status": "unknown",
-                    "started_at": utc_now_iso(),
-                }
+                "type": "tool_stream",
+                "tool_stream_event": {"data": object()},
             }
         )
 
@@ -1909,7 +1985,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         mapper.feed(
             {
                 "type": "tool_stream",
-                "tool_stream_event": {"data": {"easyharness_tool": "invalid"}},
+                "tool_stream_event": {"data": {"not_a_runtime_signal": "invalid"}},
             }
         )
 
@@ -1924,37 +2000,43 @@ class EasyHarnessSdkTests(unittest.TestCase):
 
         def feed_tool_event(
             *,
-            status: str,
+            operation: str,
             tool_use_id: str,
             name: str = "echo_tool",
             output: dict[str, object] | None = None,
         ) -> None:
-            payload: dict[str, object] = {
-                "status": status,
-                "name": name,
-                "tool_use_id": tool_use_id,
-                "started_at": started_at,
-                "input": {"text": tool_use_id},
-            }
-            if output is not None:
-                payload["output"] = output
+            signal = RuntimeSignal(
+                source="tool",
+                kind="tool",
+                operation=operation,
+                phase_key=tool_use_id,
+                started_at=started_at,
+                data={
+                    "tool_use_id": tool_use_id,
+                    "name": name,
+                    "input": {"text": tool_use_id},
+                    "output": output,
+                },
+            )
             mapper.feed(
                 {
                     "type": "tool_stream",
-                    "tool_stream_event": {"data": {"easyharness_tool": payload}},
+                    "tool_stream_event": {"data": signal},
                 }
             )
 
-        feed_tool_event(status="started", tool_use_id="tool-1")
-        feed_tool_event(status="started", tool_use_id="tool-2")
+        feed_tool_event(operation="started", tool_use_id="tool-1", name="echo_tool")
+        feed_tool_event(operation="started", tool_use_id="tool-2", name="echo_tool")
         feed_tool_event(
-            status="completed",
+            operation="completed",
             tool_use_id="tool-1",
+            name="echo_tool",
             output={"preview": "done-1"},
         )
         feed_tool_event(
-            status="completed",
+            operation="completed",
             tool_use_id="tool-2",
+            name="echo_tool",
             output={"preview": "done-2"},
         )
 
@@ -1967,7 +2049,19 @@ class EasyHarnessSdkTests(unittest.TestCase):
             ["tool-1", "tool-2", "tool-1", "tool-2"],
         )
         self.assertEqual(
-            [event.text for event in observed if event.status == "completed"],
+            [event.operation for event in observed],
+            ["started", "started", "completed", "completed"],
+        )
+        self.assertEqual(
+            [event.delta for event in observed if event.operation == "completed"],
+            [None, None],
+        )
+        self.assertEqual(
+            [
+                event.data["output"]["preview"]
+                for event in observed
+                if event.operation == "completed"
+            ],
             ["done-1", "done-2"],
         )
 
@@ -1980,31 +2074,43 @@ class EasyHarnessSdkTests(unittest.TestCase):
 
         def feed_tool_event(
             *,
-            status: str,
+            operation: str,
             tool_use_id: str,
             name: str,
             output: dict[str, object] | None = None,
         ) -> None:
-            payload: dict[str, object] = {
-                "status": status,
-                "name": name,
-                "tool_use_id": tool_use_id,
-                "started_at": started_at,
-                "input": {"name": name},
-            }
-            if output is not None:
-                payload["output"] = output
+            signal = RuntimeSignal(
+                source="tool",
+                kind="tool",
+                operation=operation,
+                phase_key=tool_use_id,
+                started_at=started_at,
+                data={
+                    "tool_use_id": tool_use_id,
+                    "name": name,
+                    "input": {"name": name},
+                    "output": output,
+                },
+            )
             mapper.feed(
                 {
                     "type": "tool_stream",
-                    "tool_stream_event": {"data": {"easyharness_tool": payload}},
+                    "tool_stream_event": {"data": signal},
                 }
             )
 
-        feed_tool_event(status="started", tool_use_id="tool-1", name="tool_alpha")
-        feed_tool_event(status="started", tool_use_id="tool-2", name="tool_beta")
         feed_tool_event(
-            status="completed",
+            operation="started",
+            tool_use_id="tool-1",
+            name="tool_alpha",
+        )
+        feed_tool_event(
+            operation="started",
+            tool_use_id="tool-2",
+            name="tool_beta",
+        )
+        feed_tool_event(
+            operation="completed",
             tool_use_id="tool-1",
             name="tool_alpha",
             output={"preview": "alpha-done"},
@@ -2015,7 +2121,9 @@ class EasyHarnessSdkTests(unittest.TestCase):
             observed.append(output_queue.get())
 
         completed_event = observed[-1]
-        self.assertEqual(completed_event.name, "tool_alpha")
+        self.assertEqual(completed_event.operation, "completed")
+        self.assertIsNone(completed_event.delta)
+        self.assertEqual(completed_event.data["name"], "tool_alpha")
         self.assertEqual(completed_event.data["tool_use_id"], "tool-1")
         self.assertEqual(completed_event.data["input"], {"name": "tool_alpha"})
         self.assertEqual(
@@ -2031,20 +2139,23 @@ class EasyHarnessSdkTests(unittest.TestCase):
         started_at = utc_now_iso()
 
         for tool_use_id in ("tool-1", "tool-2"):
+            signal = RuntimeSignal(
+                source="tool",
+                kind="tool",
+                operation="started",
+                phase_key=tool_use_id,
+                started_at=started_at,
+                data={
+                    "tool_use_id": tool_use_id,
+                    "name": "echo_tool",
+                    "input": {"text": tool_use_id},
+                    "output": None,
+                },
+            )
             mapper.feed(
                 {
                     "type": "tool_stream",
-                    "tool_stream_event": {
-                        "data": {
-                            "easyharness_tool": {
-                                "status": "started",
-                                "name": "echo_tool",
-                                "tool_use_id": tool_use_id,
-                                "started_at": started_at,
-                                "input": {"text": tool_use_id},
-                            }
-                        }
-                    },
+                    "tool_stream_event": {"data": signal},
                 }
             )
 
@@ -2067,11 +2178,12 @@ class EasyHarnessSdkTests(unittest.TestCase):
         cancelled_tool_ids = [
             event.data["tool_use_id"]
             for event in observed
-            if event.kind == "tool" and event.status == "cancelled"
+            if event.kind == "tool" and event.operation == "cancelled"
         ]
         self.assertEqual(cancelled_tool_ids, ["tool-1", "tool-2"])
         self.assertEqual(
-            (observed[-1].kind, observed[-1].status), ("system", "cancelled")
+            (observed[-1].kind, observed[-1].operation),
+            ("system", "cancelled"),
         )
 
     def test_default_eventing_manager_owns_compression_defaults(self) -> None:
@@ -2133,7 +2245,7 @@ class EasyHarnessSdkTests(unittest.TestCase):
         failed_compress_events = [
             event
             for event in observed
-            if event.kind == "compress" and event.status == "failed"
+            if event.kind == "compress" and event.operation == "failed"
         ]
         self.assertTrue(failed_compress_events)
         self.assertIn(

@@ -1,0 +1,59 @@
+{
+  "current_task": null,
+  "functional_boundary_decisions": [],
+  "impact_scope_adaptations": [
+    {
+      "task": "T-001",
+      "paths": ["easyharness/_internal/runtime.py"],
+      "reason": "Removing EventStatus makes the root package import fail.",
+      "decision": "Rename only direct internal type annotations and import to EventOperation.",
+      "protected_behavior": "No event mapping, tool, cancellation, model, or session behavior changes."
+    },
+    {
+      "task": "T-002",
+      "paths": ["easyharness/_internal/runtime.py"],
+      "reason": "Strands ToolStreamEvent wraps yielded tool values in tool_stream_event.data.",
+      "decision": "Unwrap only RuntimeSignal from the private data field and ignore all other values.",
+      "protected_behavior": "Tool execution order, tool-use identity, cancellation scope, model requests, and conversation history are unchanged."
+    }
+  ],
+  "plan_digest": "cb0bfc4dab3945205ef45bbdeb15d94aaf3f8d959b1271a549d57fee096bbd09",
+  "tasks": {
+    "T-001": {
+      "recorded_execution_results": [
+        "started",
+        "import failure confirmed: runtime.py imports removed EventStatus",
+        "public AgentEvent contract test passed",
+        "py_compile passed for types.py, runtime.py, and test_sdk.py",
+        "AgentEvent fields contain no status/text/name"
+      ],
+      "state": "completed"
+    },
+    "T-002": {
+      "recorded_execution_results": [
+        "started",
+        "all public AgentEvent construction is centralized in _EventMapper",
+        "tool and compression producers emit RuntimeSignal instead of magic dictionaries",
+        "Strands ToolStreamEvent.data wrapper verified and adapted",
+        "direct mapper sequences for delta, fallback, cancellation, and failure passed",
+        "compression RuntimeSignal projection slice passed",
+        "py_compile passed for runtime, conversation, tools, and streaming modules"
+      ],
+      "state": "completed"
+    },
+    "T-003": {
+      "recorded_execution_results": [
+        "started",
+        "SDK fixtures assert RuntimeSignal projection, terminal delta absence, and exact cancellation sequences",
+        "README documents the delta-only consumer loop and terminal data location",
+        "cancellation terminal phases preserve source data when no terminal signal data exists",
+        "ruff check easyharness tests passed",
+        "tests.test_sdk passed: 51 tests",
+        "tests.test_context_window_resolution passed: 3 tests",
+        "README has zero obsolete public protocol references",
+        "modified source, test, and README files are UTF-8 without BOM"
+      ],
+      "state": "completed"
+    }
+  }
+}
